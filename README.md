@@ -2,7 +2,7 @@
 
 [![Build Status](https://travis-ci.com/roy2220/fsm.svg?branch=master)](https://travis-ci.com/roy2220/fsm) [![Coverage Status](https://codecov.io/gh/roy2220/fsm/branch/master/graph/badge.svg)](https://codecov.io/gh/roy2220/fsm)
 
-File Space Management
+File Space Management - allocates & frees space on a file!
 
 ## Example
 
@@ -79,4 +79,4 @@ func main() {
 
 ## Documentation
 
-See https://godoc.org/github.com/roy2220/fsm#example-package
+See https://godoc.org/github.com/roy2220/fsm
