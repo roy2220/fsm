@@ -11,6 +11,7 @@ import (
 func Example() {
 	const fn = "./test_storage"
 	defer os.Remove(fn)
+
 	// store a list of words
 	func() {
 		fs := new(fsm.FileStorage).Init()
@@ -36,6 +37,7 @@ func Example() {
 			fs.SetPrimarySpace(space)
 		}
 	}()
+
 	// load the list of words
 	func() {
 		fs := new(fsm.FileStorage).Init()
