@@ -65,8 +65,10 @@ func TestPoolFreeSpace(t *testing.T) {
 		})
 	}
 
+	p.Shrink()
 	b.ShrinkSpace()
 	assert.Equal(t, 0, b.SpaceSize())
+	assert.Equal(t, 0, p.DismissedSpaceSize())
 	_, ok := p.GetPooledBlocks()()
 
 	if !assert.False(t, ok) {
@@ -96,6 +98,7 @@ func MakePool(t *testing.T) (*pool.Pool, *buddy.Buddy, []*SpaceInfo) {
 
 	t.Logf("allocated space size: %d, total space size: %d", buddy.AllocatedSpaceSize(), tss2)
 	t.Logf("total space size / allocated space size: %f", float64(tss2)/float64(buddy.AllocatedSpaceSize()))
+	t.Logf("dismissed space size: %d", pool1.DismissedSpaceSize())
 	return pool1, buddy, sis
 }
 

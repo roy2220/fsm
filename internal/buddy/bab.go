@@ -17,9 +17,9 @@ func (bab blockAllocationBitmap) AddBlockSize(block int64, blockSizeShift int) {
 	blockAllocationSubBitmap(bab[i:i+blockAllocationSubBitmapSize]).AddBlockSize(block&(MaxBlockSize-1), blockSizeShift)
 }
 
-func (bab blockAllocationBitmap) RemoveBlockSize(block int64) (int, bool) {
+func (bab blockAllocationBitmap) DeleteBlockSize(block int64) (int, bool) {
 	i := (block >> maxBlockSizeShift) * blockAllocationSubBitmapSize
-	return blockAllocationSubBitmap(bab[i : i+blockAllocationSubBitmapSize]).RemoveBlockSize(block & (MaxBlockSize - 1))
+	return blockAllocationSubBitmap(bab[i : i+blockAllocationSubBitmapSize]).DeleteBlockSize(block & (MaxBlockSize - 1))
 }
 
 func (bab blockAllocationBitmap) GetBlockSize(block int64) (int, bool) {
@@ -34,7 +34,7 @@ func (bab blockAllocationSubBitmap) AddBlockSize(block int64, blockSizeShift int
 	bab.setBit(pos)
 }
 
-func (bab blockAllocationSubBitmap) RemoveBlockSize(block int64) (int, bool) {
+func (bab blockAllocationSubBitmap) DeleteBlockSize(block int64) (int, bool) {
 	for blockSizeShift := minBlockSizeShift; ; blockSizeShift++ {
 		pos := ((1 << (maxBlockSizeShift - blockSizeShift)) - 1) + (int(block) >> blockSizeShift)
 

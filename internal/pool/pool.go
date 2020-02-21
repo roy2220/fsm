@@ -8,7 +8,7 @@ import (
 	"io"
 
 	"github.com/roy2220/fsm/internal/buddy"
-	"github.com/roy2220/fsm/internal/rbtree"
+	"github.com/roy2220/fsm/internal/list"
 )
 
 // BlockSize is the block size of the pool.
@@ -16,15 +16,22 @@ const BlockSize = buddy.MinBlockSize
 
 // Pool represents a pool of space.
 type Pool struct {
-	buddy                *buddy.Buddy
-	rbTreeOfPooledBlocks rbtree.RBTree
+	buddy              *buddy.Buddy
+	listOfPooledBlocks list.List
+	dismissedSpaceSize int
+	blockToFreeCount   int
 }
 
 // Init initializes the pool with the given buddy system and returns it.
 func (p *Pool) Init(buddy *buddy.Buddy) *Pool {
 	p.buddy = buddy
-	p.rbTreeOfPooledBlocks.Init()
+	p.listOfPooledBlocks.Init()
 	return p
+}
+
+// Build returns a builder of the pool.
+func (p *Pool) Build() Builder {
+	return Builder{p}
 }
 
 // AllocateSpace allocates space with the given size
@@ -60,6 +67,11 @@ func (p *Pool) FreeSpace(space int64) {
 	}
 }
 
+// Shrink shrinks the  pool.
+func (p *Pool) Shrink() {
+	p.freeBlocks(p.listOfPooledBlocks.GetPendingValues())
+}
+
 // GetSpaceSize returns the size of the given space of the pool.
 func (p *Pool) GetSpaceSize(space int64) int {
 	if block, chunk, ok := parseChunkSpace(space); ok {
@@ -77,17 +89,17 @@ func (p *Pool) GetSpaceSize(space int64) int {
 
 // GetPooledBlocks returns the blocks of the pooled list of the pool.
 func (p *Pool) GetPooledBlocks() func() (int64, bool) {
-	return p.rbTreeOfPooledBlocks.GetKeys()
+	return p.listOfPooledBlocks.GetValues()
 }
 
-// PutPooledBlocks puts the given block to the pooled list of the pool.
-func (p *Pool) PutPooledBlocks(block int64) {
-	p.rbTreeOfPooledBlocks.InsertKey(block)
+// DismissedSpaceSize returns the dismissed space size of the pool.
+func (p *Pool) DismissedSpaceSize() int {
+	return p.dismissedSpaceSize
 }
 
 // Fprint dumps the pool tree as plain text for debugging purposes
 func (p *Pool) Fprint(writer io.Writer) error {
-	getPooledBlock := p.rbTreeOfPooledBlocks.GetKeys()
+	getPooledBlock := p.listOfPooledBlocks.GetValues()
 
 	for block, ok := getPooledBlock(); ok; block, ok = getPooledBlock() {
 		p.doFprint(writer, block)
@@ -97,24 +109,21 @@ func (p *Pool) Fprint(writer io.Writer) error {
 }
 
 func (p *Pool) allocateChunk(chunkSize int) (int64, int32, int) {
-	getBlock := p.rbTreeOfPooledBlocks.GetKeys()
-	blocksToDismiss := make([]int64, 0, 1<<maxMissCount)
+	getPendingBlock := p.listOfPooledBlocks.GetPendingValues()
 
-	dismissBlocks := func() {
-		for _, block := range blocksToDismiss {
-			blockHeader(p.accessBlock(block)).SetState(blockDismissed)
-			p.rbTreeOfPooledBlocks.RemoveKey(block)
-		}
-	}
-
-	for block, ok := getBlock(); ok; block, ok = getBlock() {
+	for pendingBlock, ok := getPendingBlock(); ok; pendingBlock, ok = getPendingBlock() {
+		block := pendingBlock.Value()
 		blockAccessor := p.accessBlock(block)
 		blockHeader := blockHeader(blockAccessor)
 
 		if chunkSize2 := int(blockHeader.MaxFreeChunkSize()); !(chunkSize2 >= 1 && chunkSize > chunkSize2) {
-			if chunk, chunkSize, ok := p.splitChunk(block, blockAccessor, chunkSize); ok {
+			if chunk, chunkSize, ok := p.splitChunk(pendingBlock, blockAccessor, chunkSize); ok {
 				blockHeader.SetMissCount(0)
-				dismissBlocks()
+
+				if chunkSize2 > maxChunkSize {
+					p.freeBlocks(getPendingBlock)
+				}
+
 				return block, chunk, chunkSize
 			}
 		}
@@ -123,23 +132,35 @@ func (p *Pool) allocateChunk(chunkSize int) (int64, int32, int) {
 		blockHeader.SetMissCount(missCount)
 
 		if missCount < maxMissCount {
+			pendingBlock.MoveToBack()
 			continue
 		}
 
-		blocksToDismiss = append(blocksToDismiss, block)
+		blockHeader.SetState(blockDismissed)
+		pendingBlock.Delete()
+		p.dismissedSpaceSize += int(blockHeader.TotalFreeChunkSize())
 	}
 
-	dismissBlocks()
 	block, chunk := p.allocateBlock(chunkSize)
 	return block, chunk, chunkSize
 }
 
 func (p *Pool) freeChunk(block int64, chunk int32) {
 	blockAccessor := p.accessBlock(block)
+	blockHeader := blockHeader(blockAccessor)
 
-	if chunkSize := p.mergeChunk(block, blockAccessor, chunk); chunkSize > maxChunkSize {
-		p.freeBlock(block)
+	if missCount := blockHeader.MissCount(); missCount >= 1 {
+		if blockHeader.State() == blockDismissed {
+			blockHeader.SetMissCount(0)
+			blockHeader.SetState(blockPooled)
+			p.listOfPooledBlocks.PrependValue(block)
+			p.dismissedSpaceSize -= int(blockHeader.TotalFreeChunkSize())
+		} else {
+			blockHeader.SetMissCount(missCount - 1)
+		}
 	}
+
+	p.mergeChunk(block, blockAccessor, chunk)
 }
 
 func (p *Pool) getChunkSize(block int64, chunk int32) int {
@@ -153,7 +174,7 @@ func (p *Pool) getChunkSize(block int64, chunk int32) int {
 	return int(chunkHeader.Size())
 }
 
-func (p *Pool) splitChunk(block int64, blockAccessor []byte, chunkSize int) (int32, int, bool) {
+func (p *Pool) splitChunk(pendingBlock list.PendingValue, blockAccessor []byte, chunkSize int) (int32, int, bool) {
 	blockHeader := blockHeader(blockAccessor)
 	chunk := blockHeader.FirstFreeChunk()
 	lastChunkHeader := chunkHeader(nil)
@@ -169,6 +190,7 @@ func (p *Pool) splitChunk(block int64, blockAccessor []byte, chunkSize int) (int
 
 			if remainingChunkSize < minChunkSize {
 				chunkSize = chunkSize2
+				remainingChunkSize = 0
 			} else {
 				chunkHeader1.SetSize(int32(chunkSize))
 				remainingChunk := chunk + int32(chunkSize)
@@ -178,22 +200,30 @@ func (p *Pool) splitChunk(block int64, blockAccessor []byte, chunkSize int) (int
 				chunkNext = remainingChunk
 			}
 
-			blockIsExhausted := false
-
 			if lastChunkHeader == nil {
 				blockHeader.SetFirstFreeChunk(chunkNext)
-				blockIsExhausted = chunkNext < 1
 			} else {
 				lastChunkHeader.SetNext(chunkNext)
 			}
 
-			if blockIsExhausted {
+			totalChunkSize := int(blockHeader.TotalFreeChunkSize()) - chunkSize
+			blockHeader.SetTotalFreeChunkSize(int32(totalChunkSize))
+
+			if totalChunkSize == 0 {
 				blockHeader.SetMaxFreeChunkSize(0)
 				blockHeader.SetState(blockExhausted)
-				p.rbTreeOfPooledBlocks.RemoveKey(block)
+				pendingBlock.Delete()
 			} else {
-				if chunkSize3 := int(blockHeader.MaxFreeChunkSize()); chunkSize3 >= 1 && chunkSize2 == chunkSize3 {
-					blockHeader.SetMaxFreeChunkSize(0)
+				if remainingChunkSize*2 >= totalChunkSize {
+					blockHeader.SetMaxFreeChunkSize(int32(remainingChunkSize))
+
+					if chunkSize2 > maxChunkSize {
+						p.blockToFreeCount--
+					}
+				} else {
+					if chunkSize3 := int(blockHeader.MaxFreeChunkSize()); chunkSize3 >= 1 && chunkSize2 == chunkSize3 {
+						blockHeader.SetMaxFreeChunkSize(0)
+					}
 				}
 			}
 
@@ -216,14 +246,15 @@ func (p *Pool) splitChunk(block int64, blockAccessor []byte, chunkSize int) (int
 	return 0, 0, false
 }
 
-func (p *Pool) mergeChunk(block int64, blockAccessor []byte, chunk int32) int {
+func (p *Pool) mergeChunk(block int64, blockAccessor []byte, chunk int32) {
 	chunkHeader1 := chunkHeader(blockAccessor[chunk:])
 
 	if chunkHeader1.Next() != chunkAllocationMark {
 		panic(errInvalidChunk)
 	}
 
-	chunkEnd := chunk + int32(chunkHeader1.Size())
+	chunkSize := int(chunkHeader1.Size())
+	chunkEnd := chunk + int32(chunkSize)
 	blockHeader := blockHeader(blockAccessor)
 	chunk2 := blockHeader.FirstFreeChunk()
 	lastChunkHeader2 := chunkHeader(nil)
@@ -242,7 +273,7 @@ func (p *Pool) mergeChunk(block int64, blockAccessor []byte, chunk int32) int {
 		}
 
 		chunkHeader2 := chunkHeader(blockAccessor[chunk2:])
-		chunkEnd2 := chunk2 + int32(chunkHeader2.Size())
+		chunkEnd2 := chunk2 + chunkHeader2.Size()
 		chunkNext2 := chunkHeader2.Next()
 
 		if chunkEnd <= chunk2 {
@@ -274,28 +305,27 @@ func (p *Pool) mergeChunk(block int64, blockAccessor []byte, chunk int32) int {
 		chunk2 = chunkNext2
 	}
 
-	chunkSize := int(chunkEnd - chunk)
+	totalChunkSize := int(blockHeader.TotalFreeChunkSize()) + chunkSize
+	blockHeader.SetTotalFreeChunkSize(int32(totalChunkSize))
+	chunkSize = int(chunkEnd - chunk)
 
 	if blockState := blockHeader.State(); blockState == blockExhausted {
 		blockHeader.SetMaxFreeChunkSize(int32(chunkSize))
 		blockHeader.SetState(blockPooled)
-		p.rbTreeOfPooledBlocks.InsertKey(block)
+		p.listOfPooledBlocks.PrependValue(block)
 	} else {
-		if chunkSize2 := int(blockHeader.MaxFreeChunkSize()); chunkSize2 >= 1 && chunkSize > chunkSize2 {
+		if chunkSize*2 >= totalChunkSize {
 			blockHeader.SetMaxFreeChunkSize(int32(chunkSize))
-		}
 
-		if missCount := blockHeader.MissCount(); missCount >= 1 {
-			blockHeader.SetMissCount(missCount - 1)
-		}
-
-		if blockState == blockDismissed {
-			blockHeader.SetState(blockPooled)
-			p.rbTreeOfPooledBlocks.InsertKey(block)
+			if chunkSize > maxChunkSize {
+				p.blockToFreeCount++
+			}
+		} else {
+			if chunkSize2 := int(blockHeader.MaxFreeChunkSize()); chunkSize2 >= 1 && chunkSize > chunkSize2 {
+				blockHeader.SetMaxFreeChunkSize(int32(chunkSize))
+			}
 		}
 	}
-
-	return chunkSize
 }
 
 func (p *Pool) allocateBlock(chunkSize int) (int64, int32) {
@@ -312,16 +342,27 @@ func (p *Pool) allocateBlock(chunkSize int) (int64, int32) {
 	remainingChunkHeader.SetSize(int32(remainingChunkSize))
 	blockHeader := blockHeader(blockAccessor)
 	blockHeader.SetFirstFreeChunk(remainingChunk)
+	blockHeader.SetTotalFreeChunkSize(int32(remainingChunkSize))
 	blockHeader.SetMaxFreeChunkSize(int32(remainingChunkSize))
 	blockHeader.SetMissCount(0)
 	blockHeader.SetState(blockPooled)
-	p.rbTreeOfPooledBlocks.InsertKey(block)
+	p.listOfPooledBlocks.PrependValue(block)
 	return block, chunk
 }
 
-func (p *Pool) freeBlock(block int64) {
-	p.rbTreeOfPooledBlocks.RemoveKey(block)
-	p.buddy.FreeBlock(block)
+func (p *Pool) freeBlocks(getPendingBlock func() (list.PendingValue, bool)) {
+	for n := p.blockToFreeCount; n >= 1; n-- {
+		pendingBlock, _ := getPendingBlock()
+		block := pendingBlock.Value()
+		blockHeader := blockHeader(p.accessBlock(block))
+
+		if blockHeader.MaxFreeChunkSize() > maxChunkSize {
+			pendingBlock.Delete()
+			p.buddy.FreeBlock(block)
+		}
+	}
+
+	p.blockToFreeCount = 0
 }
 
 func (p *Pool) accessBlock(block int64) []byte {
@@ -354,6 +395,21 @@ func (p *Pool) doFprint(writer io.Writer, block int64) error {
 	return nil
 }
 
+// Builder represents a builder of pools of space.
+type Builder struct {
+	p *Pool
+}
+
+// PutPooledBlocks puts the given block to the pooled list.
+func (b *Builder) PutPooledBlocks(block int64) {
+	b.p.listOfPooledBlocks.AppendValue(block)
+}
+
+// SetDismissedSpaceSize sets the dismissed space size.
+func (b *Builder) SetDismissedSpaceSize(dismissedSpaceSize int) {
+	b.p.dismissedSpaceSize = dismissedSpaceSize
+}
+
 const (
 	minChunkSize        = chunkHeaderSize + 8
 	maxChunkSize        = BlockSize - blockHeaderSize - minChunkSize
@@ -377,31 +433,39 @@ func (bh blockHeader) FirstFreeChunk() int32 {
 	return int32(binary.BigEndian.Uint32(bh[8:]))
 }
 
-func (bh blockHeader) SetMaxFreeChunkSize(maxFreeChunkSize int32) {
-	binary.BigEndian.PutUint32(bh[12:], uint32(maxFreeChunkSize))
+func (bh blockHeader) SetTotalFreeChunkSize(totalFreeChunkSize int32) {
+	binary.BigEndian.PutUint32(bh[12:], uint32(totalFreeChunkSize))
 }
 
-func (bh blockHeader) MaxFreeChunkSize() int32 {
+func (bh blockHeader) TotalFreeChunkSize() int32 {
 	return int32(binary.BigEndian.Uint32(bh[12:]))
 }
 
+func (bh blockHeader) SetMaxFreeChunkSize(maxFreeChunkSize int32) {
+	binary.BigEndian.PutUint32(bh[16:], uint32(maxFreeChunkSize))
+}
+
+func (bh blockHeader) MaxFreeChunkSize() int32 {
+	return int32(binary.BigEndian.Uint32(bh[16:]))
+}
+
 func (bh blockHeader) SetMissCount(missCount int8) {
-	bh[16] = byte(missCount)
+	bh[20] = byte(missCount)
 }
 
 func (bh blockHeader) MissCount() int8 {
-	return int8(bh[16])
+	return int8(bh[20])
 }
 
 func (bh blockHeader) SetState(state blockState) {
-	bh[17] = byte(state)
+	bh[21] = byte(state)
 }
 
 func (bh blockHeader) State() blockState {
-	return blockState(bh[17])
+	return blockState(bh[21])
 }
 
-const blockHeaderSize = 18
+const blockHeaderSize = 22
 
 type blockState int
 

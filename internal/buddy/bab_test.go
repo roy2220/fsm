@@ -40,13 +40,13 @@ func TestBAB(t *testing.T) {
 	b = 0
 
 	for bss := minBlockSizeShift; bss < maxBlockSizeShift; bss++ {
-		bss2, ok := bab.RemoveBlockSize(MaxBlockSize + b)
+		bss2, ok := bab.DeleteBlockSize(MaxBlockSize + b)
 
 		if assert.True(t, ok) {
 			assert.Equal(t, bss, bss2)
 		}
 
-		_, ok = bab.RemoveBlockSize(MaxBlockSize + b)
+		_, ok = bab.DeleteBlockSize(MaxBlockSize + b)
 		assert.False(t, ok)
 		b = (2 << bss)
 	}
@@ -56,7 +56,7 @@ func TestBAB(t *testing.T) {
 	bss := minBlockSizeShift
 
 	for b2 := int64(0); b2 < MaxBlockSize; b2 += MinBlockSize {
-		bss2, ok := bab.RemoveBlockSize(b2)
+		bss2, ok := bab.DeleteBlockSize(b2)
 
 		if ok {
 			t.Log("b2=", b2)
@@ -67,7 +67,7 @@ func TestBAB(t *testing.T) {
 				assert.Equal(t, bss, bss2)
 			}
 
-			_, ok = bab.RemoveBlockSize(b)
+			_, ok = bab.DeleteBlockSize(b)
 			assert.False(t, ok, "%v", b2)
 			b = (2 << bss)
 			bss++

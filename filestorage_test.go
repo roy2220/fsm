@@ -5,18 +5,21 @@ import (
 	"math/rand"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/roy2220/fsm"
 	"github.com/stretchr/testify/assert"
 )
 
-const N = 100000
+const N = 1000000
 
 type Entry struct {
 	KeySize uint8
 	KeyHash uint64
 	KeyPtr  int64
 }
+
+var Rand = rand.New(rand.NewSource(time.Now().UnixNano()))
 
 func TestFileStorage(t *testing.T) {
 	const fn = "./test_storage"
@@ -33,7 +36,12 @@ func Store(t *testing.T, fn string) {
 		t.FailNow()
 	}
 
-	defer fs.Close()
+	defer func() {
+		fs.Close()
+		st := fs.Stats()
+		t.Logf("stats: %#v", st)
+	}()
+
 	es := make([]Entry, N)
 
 	for i := range es {
@@ -58,8 +66,6 @@ func Store(t *testing.T, fn string) {
 	}
 
 	binary.BigEndian.PutUint64(buf[9*N:], checksum)
-	st := fs.Stats()
-	t.Logf("stats: %#v", st)
 }
 
 func Load(t *testing.T, fn string) {
@@ -70,7 +76,13 @@ func Load(t *testing.T, fn string) {
 		t.FailNow()
 	}
 
-	defer fs.Close()
+	defer func() {
+		fs.Close()
+		st := fs.Stats()
+		t.Logf("stats: %#v", st)
+		assert.Equal(t, 0, st.UsedSpaceSize)
+	}()
+
 	buf := fs.AccessSpace(fs.PrimarySpace())
 	checksum := uint64(0)
 
@@ -88,9 +100,6 @@ func Load(t *testing.T, fn string) {
 	checksum2 := uint64(binary.BigEndian.Uint64(buf[9*N:]))
 	assert.Equal(t, checksum, checksum2)
 	fs.FreeSpace(fs.PrimarySpace())
-	st := fs.Stats()
-	t.Logf("stats: %#v", st)
-	assert.Equal(t, 0, st.UsedSpaceSize)
 }
 
 func MakeEntry(fs *fsm.FileStorage) Entry {
@@ -106,11 +115,11 @@ func MakeEntry(fs *fsm.FileStorage) Entry {
 }
 
 func GenerateKey() []byte {
-	ks := rand.Intn(256)
+	ks := Rand.Intn(256)
 	k := make([]byte, ks)
 
 	for i := range k {
-		k[i] = byte(rand.Intn(256))
+		k[i] = byte(Rand.Intn(256))
 	}
 
 	return k

@@ -19,8 +19,8 @@ func (rbt *RBTree) Init() *RBTree {
 	return rbt
 }
 
-// InsertKey inserts the given key to the red-black tree.
-func (rbt *RBTree) InsertKey(key int64) {
+// AddKey inserts the given key to the red-black tree.
+func (rbt *RBTree) AddKey(key int64) {
 	rbt.insertNode(&node{
 		LeftChild:   &rbt.nil,
 		RightChild:  &rbt.nil,
@@ -28,9 +28,9 @@ func (rbt *RBTree) InsertKey(key int64) {
 	})
 }
 
-// RemoveKey removes the given key from the red-black tree and returns true
+// DeleteKey deletes the given key from the red-black tree and returns true
 // if the given key exists, otherwise it returns false.
-func (rbt *RBTree) RemoveKey(key int64) bool {
+func (rbt *RBTree) DeleteKey(key int64) bool {
 	x := rbt.root()
 
 	for x != &rbt.nil {
@@ -55,9 +55,9 @@ func (rbt *RBTree) RemoveKey(key int64) bool {
 	return true
 }
 
-// RemoveMinKey removes the minimum key from the red-black tree and returns true
+// DeleteMinKey deletes the minimum key from the red-black tree and returns true
 // if the tree is not empty, otherwise it returns false.
-func (rbt *RBTree) RemoveMinKey() (int64, bool) {
+func (rbt *RBTree) DeleteMinKey() (int64, bool) {
 	x := rbt.root()
 
 	if x == &rbt.nil {
@@ -72,9 +72,9 @@ func (rbt *RBTree) RemoveMinKey() (int64, bool) {
 	return key, true
 }
 
-// RemoveMaxKey removes the maximum key from the red-black tree and returns true
+// DeleteMaxKey deletes the maximum key from the red-black tree and returns true
 // if the tree is not empty, otherwise it returns false.
-func (rbt *RBTree) RemoveMaxKey() (int64, bool) {
+func (rbt *RBTree) DeleteMaxKey() (int64, bool) {
 	x := rbt.root()
 
 	if x == &rbt.nil {
@@ -364,10 +364,8 @@ const (
 )
 
 type node struct {
-	Parent      *node
-	LeftChild   *node
-	RightChild  *node
-	ColorAndKey uint64
+	Parent, LeftChild, RightChild *node
+	ColorAndKey                   uint64
 }
 
 func (n *node) SetLeftChild(leftChild *node) {

@@ -8,45 +8,45 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestRBTreeRemoveKey(t *testing.T) {
+func TestRBTreeDeleteKey(t *testing.T) {
 	rbt, ks := MakeRBTree()
 
 	for _, k := range ks {
-		ok := rbt.RemoveKey(k)
+		ok := rbt.DeleteKey(k)
 		assert.True(t, ok, "%v", k)
 	}
 
-	ok := rbt.RemoveKey(0)
+	ok := rbt.DeleteKey(0)
 	assert.False(t, ok)
 }
 
-func TestRBTreeRemoveMinKey(t *testing.T) {
+func TestRBTreeDeleteMinKey(t *testing.T) {
 	rbt, ks := MakeRBTree()
 
 	for i, k := range ks {
-		mk, ok := rbt.RemoveMinKey()
+		mk, ok := rbt.DeleteMinKey()
 
 		if assert.True(t, ok, "%v", k) {
 			assert.Equal(t, int64(i), mk)
 		}
 	}
 
-	_, ok := rbt.RemoveMinKey()
+	_, ok := rbt.DeleteMinKey()
 	assert.False(t, ok)
 }
 
-func TestRBTreeRemoveMaxKey(t *testing.T) {
+func TestRBTreeDeleteMaxKey(t *testing.T) {
 	rbt, ks := MakeRBTree()
 
 	for i, k := range ks {
-		mk, ok := rbt.RemoveMaxKey()
+		mk, ok := rbt.DeleteMaxKey()
 
 		if assert.True(t, ok, "%v", k) {
 			assert.Equal(t, int64(len(ks)-1-i), mk)
 		}
 	}
 
-	_, ok := rbt.RemoveMaxKey()
+	_, ok := rbt.DeleteMaxKey()
 	assert.False(t, ok)
 }
 
@@ -86,7 +86,7 @@ func MakeRBTree() (*rbtree.RBTree, []int64) {
 	rbt := new(rbtree.RBTree).Init()
 
 	for _, k := range ks {
-		rbt.InsertKey(k)
+		rbt.AddKey(k)
 	}
 
 	return rbt, ks

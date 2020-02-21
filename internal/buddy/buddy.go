@@ -80,7 +80,7 @@ func (b *Buddy) FreeBlock(block int64) error {
 		return ErrInvalidBlock
 	}
 
-	blockSizeShift, ok := b.blockAllocationBitmap.RemoveBlockSize(block)
+	blockSizeShift, ok := b.blockAllocationBitmap.DeleteBlockSize(block)
 
 	if !ok {
 		return ErrInvalidBlock
@@ -147,7 +147,7 @@ func (b *Buddy) ShrinkSpace() {
 	for {
 		block := int64(b.spaceSize - MaxBlockSize)
 
-		if !rbTreeOfFreeBlocks.RemoveKey(block) {
+		if !rbTreeOfFreeBlocks.DeleteKey(block) {
 			return
 		}
 
@@ -194,7 +194,7 @@ func (b *Buddy) GetFreeBlocks(freeBlockListIndex int) func() (int64, bool) {
 
 func (b *Buddy) doAllocateBlock(freeBlockListIndex int) int64 {
 	rbTreeOfFreeBlocks := &b.rbTreesOfFreeBlocks[freeBlockListIndex]
-	block, ok := rbTreeOfFreeBlocks.RemoveMinKey()
+	block, ok := rbTreeOfFreeBlocks.DeleteMinKey()
 
 	if ok {
 		return block
@@ -206,7 +206,7 @@ func (b *Buddy) doAllocateBlock(freeBlockListIndex int) int64 {
 
 	block = b.doAllocateBlock(freeBlockListIndex + 1)
 	blockSibling := block + int64(calculateBlockSize(freeBlockListIndex))
-	rbTreeOfFreeBlocks.InsertKey(blockSibling)
+	rbTreeOfFreeBlocks.AddKey(blockSibling)
 	return block
 }
 
@@ -214,14 +214,14 @@ func (b *Buddy) doFreeBlock(block *int64, freeBlockListIndex *int) {
 	rbTreeOfFreeBlocks := &b.rbTreesOfFreeBlocks[*freeBlockListIndex]
 
 	if *freeBlockListIndex == NumberOfFreeBlockLists-1 {
-		rbTreeOfFreeBlocks.InsertKey(*block)
+		rbTreeOfFreeBlocks.AddKey(*block)
 		return
 	}
 
 	blockSibling := *block ^ int64(calculateBlockSize(*freeBlockListIndex))
 
-	if ok := rbTreeOfFreeBlocks.RemoveKey(blockSibling); !ok {
-		rbTreeOfFreeBlocks.InsertKey(*block)
+	if ok := rbTreeOfFreeBlocks.DeleteKey(blockSibling); !ok {
+		rbTreeOfFreeBlocks.AddKey(*block)
 		return
 	}
 
@@ -288,7 +288,7 @@ func (b Builder) SetBlockAllocationBitmap(blockAllocationBitmap []byte) Builder 
 
 // PutFreeBlock puts the given block to the free block list at the given index.
 func (b Builder) PutFreeBlock(freeBlockListIndex int, block int64) Builder {
-	b.b.rbTreesOfFreeBlocks[freeBlockListIndex].InsertKey(block)
+	b.b.rbTreesOfFreeBlocks[freeBlockListIndex].AddKey(block)
 	return b
 }
 

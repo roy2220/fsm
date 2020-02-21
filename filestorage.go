@@ -112,6 +112,7 @@ func (fs *FileStorage) Stats() Stats {
 		MappedSpaceSize:           fs.buddy.MappedSpaceSize(),
 		AllocatedSpaceSize:        fs.buddy.AllocatedSpaceSize(),
 		BlockAllocationBitmapSize: len(fs.buddy.BlockAllocationBitmap()),
+		DismissedSpaceSize:        fs.pool.DismissedSpaceSize(),
 	}
 }
 
@@ -158,21 +159,25 @@ func (fs *FileStorage) loadFile() error {
 		}
 	}
 
+	poolBuilder := fs.pool.Build()
+
 	if fileHeader.PooledBlockListLength >= 1 {
 		block := fileHeader.PooledBlockList
-		fs.pool.PutPooledBlocks(block)
+		poolBuilder.PutPooledBlocks(block)
 
 		for j := 1; j < int(fileHeader.PooledBlockListLength); j++ {
 			block = int64(binary.BigEndian.Uint64(fs.spaceMapper.AccessSpace()[block:]))
-			fs.pool.PutPooledBlocks(block)
+			poolBuilder.PutPooledBlocks(block)
 		}
 	}
 
+	poolBuilder.SetDismissedSpaceSize(int(fileHeader.DismissedSpaceSize))
 	fs.primarySpace = fileHeader.PrimarySpace
 	return nil
 }
 
 func (fs *FileStorage) storeFile() error {
+	fs.pool.Shrink()
 	fs.buddy.ShrinkSpace()
 
 	fileHeader := fileHeader{
@@ -181,6 +186,7 @@ func (fs *FileStorage) storeFile() error {
 		MappedSpaceSize:           int64(fs.buddy.MappedSpaceSize()),
 		AllocatedSpaceSize:        int64(fs.buddy.AllocatedSpaceSize()),
 		BlockAllocationBitmapSize: int64(len(fs.buddy.BlockAllocationBitmap())),
+		DismissedSpaceSize:        int64(fs.pool.DismissedSpaceSize()),
 		PrimarySpace:              fs.primarySpace,
 	}
 
@@ -245,6 +251,7 @@ type Stats struct {
 	MappedSpaceSize           int
 	AllocatedSpaceSize        int
 	BlockAllocationBitmapSize int
+	DismissedSpaceSize        int
 }
 
 const pageSize = 4096
