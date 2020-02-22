@@ -160,24 +160,13 @@ func (fs *FileStorage) loadFile() error {
 	}
 
 	poolBuilder := fs.pool.Build()
-
-	if fileHeader.PooledBlockListLength >= 1 {
-		block := fileHeader.PooledBlockList
-		poolBuilder.PutPooledBlocks(block)
-
-		for j := 1; j < int(fileHeader.PooledBlockListLength); j++ {
-			block = int64(binary.BigEndian.Uint64(fs.spaceMapper.AccessSpace()[block:]))
-			poolBuilder.PutPooledBlocks(block)
-		}
-	}
-
-	poolBuilder.SetDismissedSpaceSize(int(fileHeader.DismissedSpaceSize))
+	poolBuilder.LoadPooledBlockList(&fileHeader.PooledBlockList).
+		SetDismissedSpaceSize(int(fileHeader.DismissedSpaceSize))
 	fs.primarySpace = fileHeader.PrimarySpace
 	return nil
 }
 
 func (fs *FileStorage) storeFile() error {
-	fs.pool.Shrink()
 	fs.buddy.ShrinkSpace()
 
 	fileHeader := fileHeader{
@@ -209,19 +198,7 @@ func (fs *FileStorage) storeFile() error {
 		}
 	}
 
-	getPooledBlock := fs.pool.GetPooledBlocks()
-
-	if block, ok := getPooledBlock(); ok {
-		fileHeader.PooledBlockList = block
-		fileHeader.PooledBlockListLength = 1
-		lastBlock := block
-
-		for block, ok = getPooledBlock(); ok; block, ok = getPooledBlock() {
-			binary.BigEndian.PutUint64(fs.spaceMapper.AccessSpace()[lastBlock:], uint64(block))
-			fileHeader.PooledBlockListLength++
-			lastBlock = block
-		}
-	}
+	fs.pool.StorePooledBlockList(&fileHeader.PooledBlockList)
 
 	if err := fs.spaceMapper.Close(); err != nil {
 		return err

@@ -5,6 +5,7 @@ import (
 	"unsafe"
 
 	"github.com/roy2220/fsm/internal/buddy"
+	"github.com/roy2220/fsm/internal/list"
 )
 
 const fileHeaderSize = (int(unsafe.Sizeof(fileHeader{})) + (pageSize - 1)) &^ (pageSize - 1)
@@ -17,8 +18,7 @@ type fileHeader struct {
 	BlockAllocationBitmapSize int64
 	FreeBlockLists            [buddy.NumberOfFreeBlockLists]int64
 	FreeBlockListLengths      [buddy.NumberOfFreeBlockLists]int64
-	PooledBlockList           int64
-	PooledBlockListLength     int64
+	PooledBlockList           [list.Size]byte
 	DismissedSpaceSize        int64
 	PrimarySpace              int64
 }
@@ -46,10 +46,8 @@ func (fh *fileHeader) Serialize(buffer *[fileHeaderSize]byte) {
 		i += 8
 	}
 
-	binary.BigEndian.PutUint64(buffer[i:], uint64(fh.PooledBlockList))
-	i += 8
-	binary.BigEndian.PutUint64(buffer[i:], uint64(fh.PooledBlockListLength))
-	i += 8
+	copy(buffer[i:], fh.PooledBlockList[:])
+	i += len(fh.PooledBlockList)
 	binary.BigEndian.PutUint64(buffer[i:], uint64(fh.DismissedSpaceSize))
 	i += 8
 	binary.BigEndian.PutUint64(buffer[i:], uint64(fh.PrimarySpace))
@@ -83,10 +81,8 @@ func (fh *fileHeader) Deserialize(data *[fileHeaderSize]byte) {
 		i += 8
 	}
 
-	fh.PooledBlockList = int64(binary.BigEndian.Uint64(data[i:]))
-	i += 8
-	fh.PooledBlockListLength = int64(binary.BigEndian.Uint64(data[i:]))
-	i += 8
+	copy(fh.PooledBlockList[:], data[i:])
+	i += len(fh.PooledBlockList)
 	fh.DismissedSpaceSize = int64(binary.BigEndian.Uint64(data[i:]))
 	i += 8
 	fh.PrimarySpace = int64(binary.BigEndian.Uint64(data[i:]))

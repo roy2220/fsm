@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/roy2220/fsm/internal/buddy"
+	"github.com/roy2220/fsm/internal/list"
 	"github.com/roy2220/fsm/internal/pool"
 	"github.com/stretchr/testify/assert"
 )
@@ -65,13 +66,15 @@ func TestPoolFreeSpace(t *testing.T) {
 		})
 	}
 
-	p.Shrink()
 	b.ShrinkSpace()
 	assert.Equal(t, 0, b.SpaceSize())
 	assert.Equal(t, 0, p.DismissedSpaceSize())
-	_, ok := p.GetPooledBlocks()()
+	buf := [list.Size]byte{}
+	p.StorePooledBlockList(&buf)
+	l := new(list.List).Init()
+	l.Load(&buf)
 
-	if !assert.False(t, ok) {
+	if !assert.True(t, l.IsEmpty()) {
 		p.Fprint(os.Stdout)
 	}
 }

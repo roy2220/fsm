@@ -1,113 +1,156 @@
 // Package list implements a doubly-linked list.
 package list
 
+import "encoding/binary"
+
+const (
+	// Size is the size of a doubly-linked list.
+	Size = 16
+
+	// ItemSize is the size of a doubly-linked list item.
+	ItemSize = 16
+)
+
 // List represents a doubly-linked list.
 type List struct {
-	nil item
+	tail, head item
 }
 
 // Init initializes the doubly-linked list and returns it.
 func (l *List) Init() *List {
-	l.nil = item{&l.nil, &l.nil, -1}
+	l.Clear()
 	return l
 }
 
-// AppendValue appends the given value to the doubly-linked list.
-func (l *List) AppendValue(value int64) {
-	item := item{Value: value}
-	item.Insert(l.nil.Prev, &l.nil)
+// AppendItem appends the given item to the doubly-linked list.
+func (l *List) AppendItem(spaceAccessor []byte, rawItem int64) {
+	item := item(rawItem)
+
+	if l.IsEmpty() {
+		item.SetPrev(spaceAccessor, item)
+		item.SetNext(spaceAccessor, item)
+		l.tail = item
+		l.head = item
+	} else {
+		item.Insert(spaceAccessor, l.tail, l.head)
+		l.tail = item
+	}
 }
 
-// PrependValue prepend the given value to the doubly-linked list.
-func (l *List) PrependValue(value int64) {
-	item := item{Value: value}
-	item.Insert(&l.nil, l.nil.Next)
+// PrependItem prepends the given item to the doubly-linked list.
+func (l *List) PrependItem(spaceAccessor []byte, rawItem int64) {
+	item := item(rawItem)
+
+	if l.IsEmpty() {
+		item.SetPrev(spaceAccessor, item)
+		item.SetNext(spaceAccessor, item)
+		l.tail = item
+		l.head = item
+	} else {
+		item.Insert(spaceAccessor, l.tail, l.head)
+		l.head = item
+	}
 }
 
-// GetValues returns an iteration function to iterate over
-// all values in the doubly-linked list.
-func (l *List) GetValues() func() (int64, bool) {
-	item := l.nil.Next
+// RemoveItem removes the given item from the doubly-linked list.
+func (l *List) RemoveItem(spaceAccessor []byte, rawItem int64) {
+	if l.tail == l.head {
+		l.Clear()
+	} else {
+		item := item(rawItem)
+		itemPrev, itemNext := item.Remove(spaceAccessor)
 
-	return func() (int64, bool) {
-		if item == &l.nil {
+		if item == l.tail {
+			l.tail = itemPrev
+		} else if item == l.head {
+			l.head = itemNext
+		}
+	}
+}
+
+// SetTail sets the given item as the tail of the doubly-linked list.
+func (l *List) SetTail(spaceAccessor []byte, rawItem int64) {
+	item := item(rawItem)
+	l.tail = item
+	l.head = item.Next(spaceAccessor)
+}
+
+// SetHead sets the given item as the head of the doubly-linked list.
+func (l *List) SetHead(spaceAccessor []byte, rawItem int64) {
+	item := item(rawItem)
+	l.head = item
+	l.tail = item.Prev(spaceAccessor)
+}
+
+// GetItems returns an iteration function to iterate over
+// all items in the doubly-linked list.
+func (l *List) GetItems() func([]byte) (int64, bool) {
+	lastItem, nextItem, item := l.tail, l.head, item(noItem)
+
+	return func(spaceAccessor []byte) (int64, bool) {
+		if item == lastItem {
 			return 0, false
 		}
 
-		value := item.Value
-		item = item.Next
-		return value, true
+		item = nextItem
+		nextItem = nextItem.Next(spaceAccessor)
+		return int64(item), true
 	}
 }
 
-// GetPendingValues returns an iteration function to iterate over
-// all values pending in the doubly-linked list.
-func (l *List) GetPendingValues() func() (PendingValue, bool) {
-	lastItem := l.nil.Prev
-	item := l.nil.Next
-	itemNext := item.Next
-
-	return func() (PendingValue, bool) {
-		if item == &l.nil {
-			return PendingValue{}, false
-		}
-
-		pendingValue := pendingValue{&l.nil, item}
-
-		if item == lastItem {
-			item = &l.nil
-		} else {
-			item = itemNext
-			itemNext = item.Next
-		}
-
-		return PendingValue(pendingValue), true
-	}
+// Store stores the doubly-linked list to the given buffer.
+func (l *List) Store(buffer *[Size]byte) {
+	binary.BigEndian.PutUint64(buffer[:], ^uint64(l.tail))
+	binary.BigEndian.PutUint64(buffer[8:], ^uint64(l.head))
 }
 
-// PendingValue represents a value pending in a doubly-linked list.
-type PendingValue pendingValue
-
-// MoveToBack move the value to the end of a doubly-linked list.
-func (pv *PendingValue) MoveToBack() {
-	pv.Item.Remove()
-	pv.Item.Insert(pv.Nil.Prev, pv.Nil)
+// Load loads the doubly-linked list from the given data.
+func (l *List) Load(data *[Size]byte) {
+	l.tail = item(^binary.BigEndian.Uint64(data[:]))
+	l.head = item(^binary.BigEndian.Uint64(data[8:]))
 }
 
-// MoveToFront move the value to the beginning of a doubly-linked list.
-func (pv *PendingValue) MoveToFront() {
-	pv.Item.Remove()
-	pv.Item.Insert(pv.Nil, pv.Nil.Next)
+// Clear clears the doubly-linked list is empty.
+func (l *List) Clear() {
+	l.tail = noItem
+	l.head = noItem
 }
 
-// Delete deletes the value.
-func (pv *PendingValue) Delete() {
-	pv.Item.Remove()
+// IsEmpty returns a boolean value indicates whether the doubly-linked list is empty.
+func (l *List) IsEmpty() bool {
+	return l.tail == noItem
 }
 
-// Value returns the value.
-func (pv *PendingValue) Value() int64 {
-	return pv.Item.Value
+const noItem = -1
+
+type item int64
+
+func (i item) Insert(spaceAccessor []byte, prev, next item) {
+	i.SetPrev(spaceAccessor, prev)
+	prev.SetNext(spaceAccessor, i)
+	i.SetNext(spaceAccessor, next)
+	next.SetPrev(spaceAccessor, i)
 }
 
-type item struct {
-	Prev, Next *item
-	Value      int64
+func (i item) Remove(spaceAccessor []byte) (item, item) {
+	prev, next := i.Prev(spaceAccessor), i.Next(spaceAccessor)
+	prev.SetNext(spaceAccessor, next)
+	next.SetPrev(spaceAccessor, prev)
+	return prev, next
 }
 
-func (i *item) Insert(prev *item, next *item) {
-	i.Prev = prev
-	prev.Next = i
-	i.Next = next
-	next.Prev = i
+func (i item) SetPrev(spaceAccessor []byte, prev item) {
+	binary.BigEndian.PutUint64(spaceAccessor[i:], uint64(prev))
 }
 
-func (i *item) Remove() {
-	i.Prev.Next = i.Next
-	i.Next.Prev = i.Prev
+func (i item) SetNext(spaceAccessor []byte, prev item) {
+	binary.BigEndian.PutUint64(spaceAccessor[i+8:], uint64(prev))
 }
 
-type pendingValue struct {
-	Nil  *item
-	Item *item
+func (i item) Prev(spaceAccessor []byte) item {
+	return item(binary.BigEndian.Uint64(spaceAccessor[i:]))
+}
+
+func (i item) Next(spaceAccessor []byte) item {
+	return item(binary.BigEndian.Uint64(spaceAccessor[i+8:]))
 }

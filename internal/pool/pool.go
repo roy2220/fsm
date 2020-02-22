@@ -19,7 +19,6 @@ type Pool struct {
 	buddy              *buddy.Buddy
 	listOfPooledBlocks list.List
 	dismissedSpaceSize int
-	blockToFreeCount   int
 }
 
 // Init initializes the pool with the given buddy system and returns it.
@@ -67,11 +66,6 @@ func (p *Pool) FreeSpace(space int64) {
 	}
 }
 
-// Shrink shrinks the  pool.
-func (p *Pool) Shrink() {
-	p.freeBlocks(p.listOfPooledBlocks.GetPendingValues())
-}
-
 // GetSpaceSize returns the size of the given space of the pool.
 func (p *Pool) GetSpaceSize(space int64) int {
 	if block, chunk, ok := parseChunkSpace(space); ok {
@@ -87,9 +81,9 @@ func (p *Pool) GetSpaceSize(space int64) int {
 	return blockSize
 }
 
-// GetPooledBlocks returns the blocks of the pooled list of the pool.
-func (p *Pool) GetPooledBlocks() func() (int64, bool) {
-	return p.listOfPooledBlocks.GetValues()
+// StorePooledBlockList stores the pooled block list of the pool to the given buffer.
+func (p *Pool) StorePooledBlockList(buffer *[list.Size]byte) {
+	p.listOfPooledBlocks.Store(buffer)
 }
 
 // DismissedSpaceSize returns the dismissed space size of the pool.
@@ -99,31 +93,26 @@ func (p *Pool) DismissedSpaceSize() int {
 
 // Fprint dumps the pool tree as plain text for debugging purposes
 func (p *Pool) Fprint(writer io.Writer) error {
-	getPooledBlock := p.listOfPooledBlocks.GetValues()
+	getBlock := p.listOfPooledBlocks.GetItems()
+	spaceAccessor := p.buddy.SpaceMapper().AccessSpace()
 
-	for block, ok := getPooledBlock(); ok; block, ok = getPooledBlock() {
-		p.doFprint(writer, block)
+	for block, ok := getBlock(spaceAccessor); ok; block, ok = getBlock(spaceAccessor) {
+		p.doFprint(writer, spaceAccessor, block)
 	}
 
 	return nil
 }
 
 func (p *Pool) allocateChunk(chunkSize int) (int64, int32, int) {
-	getPendingBlock := p.listOfPooledBlocks.GetPendingValues()
+	getBlock := p.listOfPooledBlocks.GetItems()
+	spaceAccessor := p.buddy.SpaceMapper().AccessSpace()
 
-	for pendingBlock, ok := getPendingBlock(); ok; pendingBlock, ok = getPendingBlock() {
-		block := pendingBlock.Value()
-		blockAccessor := p.accessBlock(block)
-		blockHeader := blockHeader(blockAccessor)
+	for block, ok := getBlock(spaceAccessor); ok; block, ok = getBlock(spaceAccessor) {
+		blockHeader := blockHeader(accessBlock(spaceAccessor, block))
 
 		if chunkSize2 := int(blockHeader.MaxFreeChunkSize()); !(chunkSize2 >= 1 && chunkSize > chunkSize2) {
-			if chunk, chunkSize, ok := p.splitChunk(pendingBlock, blockAccessor, chunkSize); ok {
+			if chunk, chunkSize, ok := p.splitChunk(spaceAccessor, block, chunkSize); ok {
 				blockHeader.SetMissCount(0)
-
-				if chunkSize2 > maxChunkSize {
-					p.freeBlocks(getPendingBlock)
-				}
-
 				return block, chunk, chunkSize
 			}
 		}
@@ -132,12 +121,11 @@ func (p *Pool) allocateChunk(chunkSize int) (int64, int32, int) {
 		blockHeader.SetMissCount(missCount)
 
 		if missCount < maxMissCount {
-			pendingBlock.MoveToBack()
 			continue
 		}
 
 		blockHeader.SetState(blockDismissed)
-		pendingBlock.Delete()
+		p.listOfPooledBlocks.RemoveItem(spaceAccessor, block)
 		p.dismissedSpaceSize += int(blockHeader.TotalFreeChunkSize())
 	}
 
@@ -146,26 +134,27 @@ func (p *Pool) allocateChunk(chunkSize int) (int64, int32, int) {
 }
 
 func (p *Pool) freeChunk(block int64, chunk int32) {
-	blockAccessor := p.accessBlock(block)
-	blockHeader := blockHeader(blockAccessor)
+	spaceAccessor := p.accessSpace()
+	blockHeader := blockHeader(accessBlock(spaceAccessor, block))
 
 	if missCount := blockHeader.MissCount(); missCount >= 1 {
 		if blockHeader.State() == blockDismissed {
 			blockHeader.SetMissCount(0)
 			blockHeader.SetState(blockPooled)
-			p.listOfPooledBlocks.PrependValue(block)
+			p.listOfPooledBlocks.AppendItem(spaceAccessor, block)
 			p.dismissedSpaceSize -= int(blockHeader.TotalFreeChunkSize())
 		} else {
 			blockHeader.SetMissCount(missCount - 1)
 		}
 	}
 
-	p.mergeChunk(block, blockAccessor, chunk)
+	if chunkSize := p.mergeChunk(spaceAccessor, block, chunk); chunkSize > maxChunkSize {
+		p.freeBlock(spaceAccessor, block)
+	}
 }
 
 func (p *Pool) getChunkSize(block int64, chunk int32) int {
-	blockAccessor := p.accessBlock(block)
-	chunkHeader := chunkHeader(blockAccessor[chunk:])
+	chunkHeader := chunkHeader(accessBlock(p.accessSpace(), block)[chunk:])
 
 	if chunkHeader.Next() != chunkAllocationMark {
 		panic(errInvalidChunk)
@@ -174,7 +163,8 @@ func (p *Pool) getChunkSize(block int64, chunk int32) int {
 	return int(chunkHeader.Size())
 }
 
-func (p *Pool) splitChunk(pendingBlock list.PendingValue, blockAccessor []byte, chunkSize int) (int32, int, bool) {
+func (p *Pool) splitChunk(spaceAccessor []byte, block int64, chunkSize int) (int32, int, bool) {
+	blockAccessor := accessBlock(spaceAccessor, block)
 	blockHeader := blockHeader(blockAccessor)
 	chunk := blockHeader.FirstFreeChunk()
 	lastChunkHeader := chunkHeader(nil)
@@ -208,18 +198,15 @@ func (p *Pool) splitChunk(pendingBlock list.PendingValue, blockAccessor []byte, 
 
 			totalChunkSize := int(blockHeader.TotalFreeChunkSize()) - chunkSize
 			blockHeader.SetTotalFreeChunkSize(int32(totalChunkSize))
+			p.listOfPooledBlocks.SetHead(spaceAccessor, block)
 
 			if totalChunkSize == 0 {
 				blockHeader.SetMaxFreeChunkSize(0)
 				blockHeader.SetState(blockExhausted)
-				pendingBlock.Delete()
+				p.listOfPooledBlocks.RemoveItem(spaceAccessor, block)
 			} else {
-				if remainingChunkSize*2 >= totalChunkSize {
+				if remainingChunkSize >= totalChunkSize-remainingChunkSize {
 					blockHeader.SetMaxFreeChunkSize(int32(remainingChunkSize))
-
-					if chunkSize2 > maxChunkSize {
-						p.blockToFreeCount--
-					}
 				} else {
 					if chunkSize3 := int(blockHeader.MaxFreeChunkSize()); chunkSize3 >= 1 && chunkSize2 == chunkSize3 {
 						blockHeader.SetMaxFreeChunkSize(0)
@@ -246,7 +233,8 @@ func (p *Pool) splitChunk(pendingBlock list.PendingValue, blockAccessor []byte, 
 	return 0, 0, false
 }
 
-func (p *Pool) mergeChunk(block int64, blockAccessor []byte, chunk int32) {
+func (p *Pool) mergeChunk(spaceAccessor []byte, block int64, chunk int32) int {
+	blockAccessor := accessBlock(spaceAccessor, block)
 	chunkHeader1 := chunkHeader(blockAccessor[chunk:])
 
 	if chunkHeader1.Next() != chunkAllocationMark {
@@ -312,25 +300,27 @@ func (p *Pool) mergeChunk(block int64, blockAccessor []byte, chunk int32) {
 	if blockState := blockHeader.State(); blockState == blockExhausted {
 		blockHeader.SetMaxFreeChunkSize(int32(chunkSize))
 		blockHeader.SetState(blockPooled)
-		p.listOfPooledBlocks.PrependValue(block)
+		p.listOfPooledBlocks.PrependItem(spaceAccessor, block)
 	} else {
-		if chunkSize*2 >= totalChunkSize {
+		if chunkSize >= totalChunkSize-chunkSize {
 			blockHeader.SetMaxFreeChunkSize(int32(chunkSize))
-
-			if chunkSize > maxChunkSize {
-				p.blockToFreeCount++
-			}
 		} else {
 			if chunkSize2 := int(blockHeader.MaxFreeChunkSize()); chunkSize2 >= 1 && chunkSize > chunkSize2 {
 				blockHeader.SetMaxFreeChunkSize(int32(chunkSize))
 			}
 		}
+
+		p.listOfPooledBlocks.RemoveItem(spaceAccessor, block)
+		p.listOfPooledBlocks.PrependItem(spaceAccessor, block)
 	}
+
+	return chunkSize
 }
 
 func (p *Pool) allocateBlock(chunkSize int) (int64, int32) {
 	block, _, _ := p.buddy.AllocateBlock(BlockSize)
-	blockAccessor := p.accessBlock(block)
+	spaceAccessor := p.accessSpace()
+	blockAccessor := accessBlock(spaceAccessor, block)
 	chunk := int32(blockHeaderSize)
 	chunkHeader1 := chunkHeader(blockAccessor[chunk:])
 	chunkHeader1.SetNext(chunkAllocationMark)
@@ -346,35 +336,25 @@ func (p *Pool) allocateBlock(chunkSize int) (int64, int32) {
 	blockHeader.SetMaxFreeChunkSize(int32(remainingChunkSize))
 	blockHeader.SetMissCount(0)
 	blockHeader.SetState(blockPooled)
-	p.listOfPooledBlocks.PrependValue(block)
+	p.listOfPooledBlocks.PrependItem(spaceAccessor, block)
 	return block, chunk
 }
 
-func (p *Pool) freeBlocks(getPendingBlock func() (list.PendingValue, bool)) {
-	for n := p.blockToFreeCount; n >= 1; n-- {
-		pendingBlock, _ := getPendingBlock()
-		block := pendingBlock.Value()
-		blockHeader := blockHeader(p.accessBlock(block))
-
-		if blockHeader.MaxFreeChunkSize() > maxChunkSize {
-			pendingBlock.Delete()
-			p.buddy.FreeBlock(block)
-		}
-	}
-
-	p.blockToFreeCount = 0
+func (p *Pool) freeBlock(spaceAccessor []byte, block int64) {
+	p.listOfPooledBlocks.RemoveItem(spaceAccessor, block)
+	p.buddy.FreeBlock(block)
 }
 
-func (p *Pool) accessBlock(block int64) []byte {
-	return p.buddy.SpaceMapper().AccessSpace()[block:]
+func (p *Pool) accessSpace() []byte {
+	return p.buddy.SpaceMapper().AccessSpace()
 }
 
-func (p *Pool) doFprint(writer io.Writer, block int64) error {
+func (p *Pool) doFprint(writer io.Writer, spaceAccessor []byte, block int64) error {
 	if _, err := fmt.Fprintf(writer, "pooled block %d:", block); err != nil {
 		return err
 	}
 
-	blockAccessor := p.accessBlock(block)
+	blockAccessor := accessBlock(spaceAccessor, block)
 	blockHeader := blockHeader(blockAccessor)
 	chunk := blockHeader.FirstFreeChunk()
 
@@ -400,14 +380,16 @@ type Builder struct {
 	p *Pool
 }
 
-// PutPooledBlocks puts the given block to the pooled list.
-func (b *Builder) PutPooledBlocks(block int64) {
-	b.p.listOfPooledBlocks.AppendValue(block)
+// LoadPooledBlockList loads the pooled block list from the given data.
+func (b Builder) LoadPooledBlockList(data *[list.Size]byte) Builder {
+	b.p.listOfPooledBlocks.Load(data)
+	return b
 }
 
 // SetDismissedSpaceSize sets the dismissed space size.
-func (b *Builder) SetDismissedSpaceSize(dismissedSpaceSize int) {
+func (b Builder) SetDismissedSpaceSize(dismissedSpaceSize int) Builder {
 	b.p.dismissedSpaceSize = dismissedSpaceSize
+	return b
 }
 
 const (
@@ -423,49 +405,49 @@ const (
 	blockExhausted
 )
 
-type blockHeader []byte // reserve the first 8 bytes for pooled block linked-list.
+type blockHeader []byte
 
 func (bh blockHeader) SetFirstFreeChunk(firstFreeChunk int32) {
-	binary.BigEndian.PutUint32(bh[8:], uint32(firstFreeChunk))
+	binary.BigEndian.PutUint32(bh[list.ItemSize:], uint32(firstFreeChunk))
 }
 
 func (bh blockHeader) FirstFreeChunk() int32 {
-	return int32(binary.BigEndian.Uint32(bh[8:]))
+	return int32(binary.BigEndian.Uint32(bh[list.ItemSize:]))
 }
 
 func (bh blockHeader) SetTotalFreeChunkSize(totalFreeChunkSize int32) {
-	binary.BigEndian.PutUint32(bh[12:], uint32(totalFreeChunkSize))
+	binary.BigEndian.PutUint32(bh[list.ItemSize+4:], uint32(totalFreeChunkSize))
 }
 
 func (bh blockHeader) TotalFreeChunkSize() int32 {
-	return int32(binary.BigEndian.Uint32(bh[12:]))
+	return int32(binary.BigEndian.Uint32(bh[list.ItemSize+4:]))
 }
 
 func (bh blockHeader) SetMaxFreeChunkSize(maxFreeChunkSize int32) {
-	binary.BigEndian.PutUint32(bh[16:], uint32(maxFreeChunkSize))
+	binary.BigEndian.PutUint32(bh[list.ItemSize+8:], uint32(maxFreeChunkSize))
 }
 
 func (bh blockHeader) MaxFreeChunkSize() int32 {
-	return int32(binary.BigEndian.Uint32(bh[16:]))
+	return int32(binary.BigEndian.Uint32(bh[list.ItemSize+8:]))
 }
 
 func (bh blockHeader) SetMissCount(missCount int8) {
-	bh[20] = byte(missCount)
+	bh[list.ItemSize+12] = byte(missCount)
 }
 
 func (bh blockHeader) MissCount() int8 {
-	return int8(bh[20])
+	return int8(bh[list.ItemSize+12])
 }
 
 func (bh blockHeader) SetState(state blockState) {
-	bh[21] = byte(state)
+	bh[list.ItemSize+13] = byte(state)
 }
 
 func (bh blockHeader) State() blockState {
-	return blockState(bh[21])
+	return blockState(bh[list.ItemSize+13])
 }
 
-const blockHeaderSize = 22
+const blockHeaderSize = list.ItemSize + 14
 
 type blockState int
 
@@ -508,4 +490,8 @@ func parseChunkSpace(chunkSpace int64) (int64, int32, bool) {
 
 func calculateChunkSpaceSize(chunkSize int) int {
 	return chunkSize - chunkHeaderSize
+}
+
+func accessBlock(spaceAccessor []byte, block int64) []byte {
+	return spaceAccessor[block : block+BlockSize]
 }

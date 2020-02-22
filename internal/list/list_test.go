@@ -1,115 +1,114 @@
 package list_test
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/roy2220/fsm/internal/list"
 	"github.com/stretchr/testify/assert"
 )
 
-func TestListAddValue(t *testing.T) {
+func TestListInsertItem(t *testing.T) {
+	sa := make([]byte, 7*list.ItemSize)
 	l := new(list.List).Init()
-	l.PrependValue(3)
-	l.PrependValue(2)
-	l.PrependValue(1)
-	l.AppendValue(4)
-	l.AppendValue(5)
-	l.AppendValue(6)
-	getValue := l.GetValues()
-	n := int64(1)
-
-	for v, ok := getValue(); ok; v, ok = getValue() {
-		assert.Equal(t, n, v)
-		n++
-	}
-
-	assert.Equal(t, int64(7), n)
+	l.PrependItem(sa, 3*list.ItemSize)
+	l.PrependItem(sa, 2*list.ItemSize)
+	l.PrependItem(sa, 1*list.ItemSize)
+	l.AppendItem(sa, 4*list.ItemSize)
+	l.AppendItem(sa, 5*list.ItemSize)
+	l.AppendItem(sa, 6*list.ItemSize)
+	assert.Equal(t, "1,2,3,4,5,6", DumpList(sa, l))
 }
 
-func TestListDeleteValue(t *testing.T) {
+func TestListRemoveItem(t *testing.T) {
+	sa := make([]byte, 7*list.ItemSize)
 	l := new(list.List).Init()
 
-	for i := int64(0); i < 6; i++ {
-		l.AppendValue(i + 1)
+	for n := 1; n <= 6; n++ {
+		l.AppendItem(sa, int64(n*list.ItemSize))
 	}
 
-	getPendingValue := l.GetPendingValues()
+	assert.Equal(t, "1,2,3,4,5,6", DumpList(sa, l))
+	getItem := l.GetItems()
 
-	for pv, ok := getPendingValue(); ok; pv, ok = getPendingValue() {
-		if pv.Value()%2 == 0 {
-			pv.Delete()
+	for i, ok := getItem(sa); ok; i, ok = getItem(sa) {
+		if n := i / list.ItemSize; n%2 == 0 {
+			l.RemoveItem(sa, i)
+			l.AppendItem(sa, i)
 		}
 	}
 
-	getValue := l.GetValues()
-	n := int64(1)
+	assert.Equal(t, "1,3,5,2,4,6", DumpList(sa, l))
+	getItem = l.GetItems()
 
-	for v, ok := getValue(); ok; v, ok = getValue() {
-		assert.Equal(t, n, v)
-		n += 2
+	for i, ok := getItem(sa); ok; i, ok = getItem(sa) {
+		if n := i / list.ItemSize; n%2 == 0 {
+			l.RemoveItem(sa, i)
+			l.PrependItem(sa, i)
+		}
 	}
 
-	assert.Equal(t, int64(7), n)
-	getPendingValue = l.GetPendingValues()
+	assert.Equal(t, "6,4,2,1,3,5", DumpList(sa, l))
+	getItem = l.GetItems()
 
-	for pv, ok := getPendingValue(); ok; pv, ok = getPendingValue() {
-		pv.Delete()
+	for i, ok := getItem(sa); ok; i, ok = getItem(sa) {
+		l.RemoveItem(sa, i)
 	}
 
-	getValue = l.GetValues()
-	_, ok := getValue()
-	assert.False(t, ok)
+	assert.Equal(t, "", DumpList(sa, l))
 }
 
-func TestListMoveValue(t *testing.T) {
+func TestListSetHeadAndTail(t *testing.T) {
+	sa := make([]byte, 7*list.ItemSize)
 	l := new(list.List).Init()
 
-	for i := int64(0); i < 6; i++ {
-		l.AppendValue(i + 1)
+	for n := 1; n <= 6; n++ {
+		l.AppendItem(sa, int64(n*list.ItemSize))
 	}
 
-	getPendingValue := l.GetPendingValues()
+	assert.Equal(t, "1,2,3,4,5,6", DumpList(sa, l))
+	l.SetHead(sa, 3*list.ItemSize)
+	assert.Equal(t, "3,4,5,6,1,2", DumpList(sa, l))
+	l.SetTail(sa, 5*list.ItemSize)
+	assert.Equal(t, "6,1,2,3,4,5", DumpList(sa, l))
 
-	for pv, ok := getPendingValue(); ok; pv, ok = getPendingValue() {
-		if pv.Value() >= 4 {
-			pv.MoveToFront()
-		}
+	for n := 1; n <= 5; n++ {
+		l.RemoveItem(sa, int64(n*list.ItemSize))
 	}
 
-	getValue := l.GetValues()
-	s := []int64{6, 5, 4, 1, 2, 3}
-	i := 0
+	assert.Equal(t, "6", DumpList(sa, l))
+	l.SetHead(sa, 6*list.ItemSize)
+	assert.Equal(t, "6", DumpList(sa, l))
+	l.SetTail(sa, 6*list.ItemSize)
+	assert.Equal(t, "6", DumpList(sa, l))
+}
 
-	for v, ok := getValue(); ok; v, ok = getValue() {
-		assert.Equal(t, s[i], v)
-		i++
+func TestListStoreAndLoad(t *testing.T) {
+	sa := make([]byte, 7*list.ItemSize)
+	l := new(list.List).Init()
+
+	for n := 1; n <= 6; n++ {
+		l.AppendItem(sa, int64(n*list.ItemSize))
 	}
 
-	assert.Equal(t, len(s), i)
-	getPendingValue = l.GetPendingValues()
-	i = 0
-	f := true
+	assert.Equal(t, "1,2,3,4,5,6", DumpList(sa, l))
+	b := [list.Size]byte{}
+	l.Store(&b)
+	l.Load(&b)
+	assert.Equal(t, "1,2,3,4,5,6", DumpList(sa, l))
+}
 
-	for pv, ok := getPendingValue(); ok; pv, ok = getPendingValue() {
-		assert.Equal(t, s[i], pv.Value())
-		i++
+func DumpList(sa []byte, l *list.List) string {
+	getItem := l.GetItems()
+	text := ""
 
-		if f && pv.Value() >= 4 {
-			pv.MoveToBack()
-		} else {
-			f = false
-		}
+	for i, ok := getItem(sa); ok; i, ok = getItem(sa) {
+		text += fmt.Sprintf("%d,", int(i/list.ItemSize))
 	}
 
-	assert.Equal(t, len(s), i)
-	getValue = l.GetValues()
-	s = []int64{1, 2, 3, 6, 5, 4}
-	i = 0
-
-	for v, ok := getValue(); ok; v, ok = getValue() {
-		assert.Equal(t, s[i], v)
-		i++
+	if text != "" {
+		text = text[:len(text)-1]
 	}
 
-	assert.Equal(t, len(s), i)
+	return text
 }
