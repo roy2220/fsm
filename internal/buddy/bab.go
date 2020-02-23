@@ -12,65 +12,163 @@ func (bab *blockAllocationBitmap) Shrink() {
 	*bab = (*bab)[:len(*bab)-blockAllocationSubBitmapSize]
 }
 
-func (bab blockAllocationBitmap) AddBlockSize(block int64, blockSizeShift int) {
-	i := (block >> maxBlockSizeShift) * blockAllocationSubBitmapSize
-	blockAllocationSubBitmap(bab[i:i+blockAllocationSubBitmapSize]).AddBlockSize(block&(MaxBlockSize-1), blockSizeShift)
+func (bab blockAllocationBitmap) AllocateBlock(block int64, blockSizeShift int) {
+	sub, subBlock := bab.getSub(block)
+	sub.AllocateBlock(subBlock, blockSizeShift)
 }
 
-func (bab blockAllocationBitmap) DeleteBlockSize(block int64) (int, bool) {
-	i := (block >> maxBlockSizeShift) * blockAllocationSubBitmapSize
-	return blockAllocationSubBitmap(bab[i : i+blockAllocationSubBitmapSize]).DeleteBlockSize(block & (MaxBlockSize - 1))
+func (bab blockAllocationBitmap) FreeBlock(block int64) (int, bool) {
+	sub, subBlock := bab.getSub(block)
+	return sub.FreeBlock(subBlock)
 }
 
 func (bab blockAllocationBitmap) GetBlockSize(block int64) (int, bool) {
+	sub, subBlock := bab.getSub(block)
+	return sub.GetBlockSize(subBlock)
+}
+
+func (bab blockAllocationBitmap) GetFreeBlocks(callback func(int64, int)) {
+	block := int64(0)
+
+	for i := 0; i < len(bab); i += blockAllocationSubBitmapSize {
+		sub := blockAllocationSubBitmap(bab[i : i+blockAllocationSubBitmapSize])
+
+		sub.GetFreeBlocks(func(subBlock int64, blockSizeShift int) {
+			callback(block|subBlock, blockSizeShift)
+		})
+
+		block += MaxBlockSize
+	}
+}
+
+func (bab blockAllocationBitmap) getSub(block int64) (blockAllocationSubBitmap, int64) {
 	i := (block >> maxBlockSizeShift) * blockAllocationSubBitmapSize
-	return blockAllocationSubBitmap(bab[i : i+blockAllocationSubBitmapSize]).GetBlockSize(block & (MaxBlockSize - 1))
+	sub := blockAllocationSubBitmap(bab[i : i+blockAllocationSubBitmapSize])
+	subBlock := block & (MaxBlockSize - 1)
+	return sub, subBlock
 }
 
 type blockAllocationSubBitmap []uint8
 
-func (bab blockAllocationSubBitmap) AddBlockSize(block int64, blockSizeShift int) {
-	pos := ((1 << (maxBlockSizeShift - blockSizeShift)) - 1) + (int(block) >> blockSizeShift)
-	bab.setBit(pos)
-}
+func (basb blockAllocationSubBitmap) AllocateBlock(block int64, blockSizeShift int) {
+	bitPos := locateBit(block, blockSizeShift)
 
-func (bab blockAllocationSubBitmap) DeleteBlockSize(block int64) (int, bool) {
-	for blockSizeShift := minBlockSizeShift; ; blockSizeShift++ {
-		pos := ((1 << (maxBlockSizeShift - blockSizeShift)) - 1) + (int(block) >> blockSizeShift)
+	for {
+		basb.setBit(bitPos)
 
-		if bab.testBit(pos) {
-			bab.clearBit(pos)
-			return blockSizeShift, true
+		if siblingBitPos := locateSiblingBit(bitPos); siblingBitPos < 0 || basb.testBit(siblingBitPos) {
+			return
 		}
 
-		if pos&1 == 0 {
-			return 0, false
-		}
+		bitPos = locateParentBit(bitPos)
 	}
 }
 
-func (bab blockAllocationSubBitmap) GetBlockSize(block int64) (int, bool) {
-	for blockSizeShift := minBlockSizeShift; ; blockSizeShift++ {
-		pos := ((1 << (maxBlockSizeShift - blockSizeShift)) - 1) + (int(block) >> blockSizeShift)
+func (basb blockAllocationSubBitmap) FreeBlock(block int64) (int, bool) {
+	blockSizeShift, bitPos, ok := basb.doGetBlockSize(block)
 
-		if bab.testBit(pos) {
-			return blockSizeShift, true
+	if !ok {
+		return 0, false
+	}
+
+	for {
+		basb.clearBit(bitPos)
+
+		if siblingBitPos := locateSiblingBit(bitPos); siblingBitPos < 0 || basb.testBit(siblingBitPos) {
+			break
 		}
 
-		if pos&1 == 0 {
-			return 0, false
+		bitPos = locateParentBit(bitPos)
+	}
+
+	return blockSizeShift, true
+}
+
+func (basb blockAllocationSubBitmap) GetBlockSize(block int64) (int, bool) {
+	blockSizeShift, _, ok := basb.doGetBlockSize(block)
+	return blockSizeShift, ok
+}
+
+func (basb blockAllocationSubBitmap) GetFreeBlocks(callback func(int64, int)) {
+	basb.doGetFreeBlocks(0, maxBlockSizeShift, callback)
+}
+
+func (basb blockAllocationSubBitmap) doGetBlockSize(block int64) (int, int, bool) {
+	blockSizeShift := minBlockSizeShift
+	bitPos := locateBit(block, blockSizeShift)
+
+	for {
+		if basb.testBit(bitPos) {
+			return blockSizeShift, bitPos, true
 		}
+
+		if !bitIsLeft(bitPos) || basb.testBit(locateRightSiblingBit(bitPos)) {
+			return 0, 0, false
+		}
+
+		blockSizeShift++
+		bitPos = locateParentBit(bitPos)
 	}
 }
 
-func (bab blockAllocationSubBitmap) setBit(pos int) {
-	bab[pos>>3] |= 1 << (pos & 7)
+func (basb blockAllocationSubBitmap) doGetFreeBlocks(bitPos int, blockSizeShift int, callback func(int64, int)) {
+	if !basb.testBit(bitPos) {
+		if siblingBitPos := locateSiblingBit(bitPos); siblingBitPos < 0 || basb.testBit(siblingBitPos) {
+			block := convertBitPosToBlock(bitPos, blockSizeShift)
+			callback(block, blockSizeShift)
+		}
+
+		return
+	}
+
+	if blockSizeShift == minBlockSizeShift {
+		return
+	}
+
+	leftChildBitPos := locateLeftChildBit(bitPos)
+	rightChildBitPos := locateRightSiblingBit(leftChildBitPos)
+	basb.doGetFreeBlocks(leftChildBitPos, blockSizeShift-1, callback)
+	basb.doGetFreeBlocks(rightChildBitPos, blockSizeShift-1, callback)
 }
 
-func (bab blockAllocationSubBitmap) clearBit(pos int) {
-	bab[pos>>3] &^= 1 << (pos & 7)
+func (basb blockAllocationSubBitmap) setBit(bitPos int) {
+	basb[bitPos>>3] |= 1 << (bitPos & 7)
 }
 
-func (bab blockAllocationSubBitmap) testBit(pos int) bool {
-	return bab[pos>>3]&(1<<(pos&7)) != 0
+func (basb blockAllocationSubBitmap) clearBit(bitPos int) {
+	basb[bitPos>>3] &^= 1 << (bitPos & 7)
+}
+
+func (basb blockAllocationSubBitmap) testBit(bitPos int) bool {
+	return basb[bitPos>>3]&(1<<(bitPos&7)) != 0
+}
+
+func locateBit(block int64, blockSizeShift int) int {
+	// return ((1 << (maxBlockSizeShift - blockSizeShift)) - 1) + int(block>>blockSizeShift)
+	return int((block+(1<<maxBlockSizeShift))>>blockSizeShift) - 1
+}
+
+func locateParentBit(bitPos int) int {
+	return ((bitPos + 1) >> 1) - 1
+}
+
+func locateSiblingBit(bitPos int) int {
+	return ((bitPos + 1) ^ 1) - 1
+}
+
+func bitIsLeft(bitPos int) bool {
+	return bitPos&1 == 1
+}
+
+func locateRightSiblingBit(bitPos int) int {
+	return bitPos + 1
+}
+
+func locateLeftChildBit(bitPos int) int {
+	return ((bitPos + 1) << 1) - 1
+}
+
+func convertBitPosToBlock(bitPos int, blockSizeShift int) int64 {
+	// return int64(bitPos-((1<<(maxBlockSizeShift-blockSizeShift))-1)) << blockSizeShift
+	return (int64(bitPos+1) << blockSizeShift) - (1 << maxBlockSizeShift)
 }

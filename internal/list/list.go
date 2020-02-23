@@ -110,7 +110,7 @@ func (l *List) Load(data *[Size]byte) {
 	l.head = item(^binary.BigEndian.Uint64(data[8:]))
 }
 
-// Clear clears the doubly-linked list is empty.
+// Clear clears the doubly-linked list to empty.
 func (l *List) Clear() {
 	l.tail = noItem
 	l.head = noItem

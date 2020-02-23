@@ -58,7 +58,7 @@ func (b *Buddy) AllocateBlock(blockSize int) (int64, int, error) {
 	blockSizeShift := calculateBlockSizeShift(freeBlockListIndex)
 	blockSize = 1 << blockSizeShift
 	b.allocatedSpaceSize += blockSize
-	b.blockAllocationBitmap.AddBlockSize(block, blockSizeShift)
+	b.blockAllocationBitmap.AllocateBlock(block, blockSizeShift)
 
 	if usedSpaceSize := int(block) + blockSize; usedSpaceSize > b.usedSpaceSize {
 		if usedSpaceSize > b.mappedSpaceSize {
@@ -80,7 +80,7 @@ func (b *Buddy) FreeBlock(block int64) error {
 		return ErrInvalidBlock
 	}
 
-	blockSizeShift, ok := b.blockAllocationBitmap.DeleteBlockSize(block)
+	blockSizeShift, ok := b.blockAllocationBitmap.FreeBlock(block)
 
 	if !ok {
 		return ErrInvalidBlock
@@ -186,12 +186,6 @@ func (b *Buddy) BlockAllocationBitmap() []byte {
 	return b.blockAllocationBitmap
 }
 
-// GetFreeBlocks returns an iteration function to iterate over all blocks
-// in free block list at the given index.
-func (b *Buddy) GetFreeBlocks(freeBlockListIndex int) func() (int64, bool) {
-	return b.rbTreesOfFreeBlocks[freeBlockListIndex].GetKeys()
-}
-
 func (b *Buddy) doAllocateBlock(freeBlockListIndex int) int64 {
 	rbTreeOfFreeBlocks := &b.rbTreesOfFreeBlocks[freeBlockListIndex]
 	block, ok := rbTreeOfFreeBlocks.DeleteMinKey()
@@ -283,12 +277,12 @@ func (b Builder) SetAllocatedSpaceSize(allocatedSpaceSize int) Builder {
 // SetBlockAllocationBitmap sets the block allocation bitmap of buddy systems to the given value.
 func (b Builder) SetBlockAllocationBitmap(blockAllocationBitmap []byte) Builder {
 	b.b.blockAllocationBitmap = blockAllocationBitmap
-	return b
-}
 
-// PutFreeBlock puts the given block to the free block list at the given index.
-func (b Builder) PutFreeBlock(freeBlockListIndex int, block int64) Builder {
-	b.b.rbTreesOfFreeBlocks[freeBlockListIndex].AddKey(block)
+	b.b.blockAllocationBitmap.GetFreeBlocks(func(block int64, blockSizeShift int) {
+		freeBlockListIndex := calculateFreeBlockListIndex(blockSizeShift)
+		b.b.rbTreesOfFreeBlocks[freeBlockListIndex].AddKey(block)
+	})
+
 	return b
 }
 

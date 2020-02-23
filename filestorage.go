@@ -2,7 +2,6 @@
 package fsm
 
 import (
-	"encoding/binary"
 	"os"
 
 	"github.com/roy2220/fsm/internal/buddy"
@@ -144,21 +143,6 @@ func (fs *FileStorage) loadFile() error {
 		SetMappedSpaceSize(int(fileHeader.MappedSpaceSize)).
 		SetAllocatedSpaceSize(int(fileHeader.AllocatedSpaceSize)).
 		SetBlockAllocationBitmap(blockAllocationBitmap)
-
-	for i, freeBlockList := range fileHeader.FreeBlockLists {
-		if int(fileHeader.FreeBlockListLengths[i]) == 0 {
-			continue
-		}
-
-		block := freeBlockList
-		buddyBuilder.PutFreeBlock(i, block)
-
-		for j := 1; j < int(fileHeader.FreeBlockListLengths[i]); j++ {
-			block = int64(binary.BigEndian.Uint64(fs.spaceMapper.AccessSpace()[block:]))
-			buddyBuilder.PutFreeBlock(i, block)
-		}
-	}
-
 	poolBuilder := fs.pool.Build()
 	poolBuilder.LoadPooledBlockList(&fileHeader.PooledBlockList).
 		SetDismissedSpaceSize(int(fileHeader.DismissedSpaceSize))
@@ -177,25 +161,6 @@ func (fs *FileStorage) storeFile() error {
 		BlockAllocationBitmapSize: int64(len(fs.buddy.BlockAllocationBitmap())),
 		DismissedSpaceSize:        int64(fs.pool.DismissedSpaceSize()),
 		PrimarySpace:              fs.primarySpace,
-	}
-
-	for i := range fileHeader.FreeBlockLists {
-		getFreeBlock := fs.buddy.GetFreeBlocks(i)
-		block, ok := getFreeBlock()
-
-		if !ok {
-			continue
-		}
-
-		fileHeader.FreeBlockLists[i] = block
-		fileHeader.FreeBlockListLengths[i] = 1
-		lastBlock := block
-
-		for block, ok = getFreeBlock(); ok; block, ok = getFreeBlock() {
-			binary.BigEndian.PutUint64(fs.spaceMapper.AccessSpace()[lastBlock:], uint64(block))
-			fileHeader.FreeBlockListLengths[i]++
-			lastBlock = block
-		}
 	}
 
 	fs.pool.StorePooledBlockList(&fileHeader.PooledBlockList)
