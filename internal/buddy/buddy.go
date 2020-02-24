@@ -14,9 +14,6 @@ const (
 
 	// MaxBlockSize is the maximum block size of buddy systems.
 	MaxBlockSize = 1 << maxBlockSizeShift
-
-	// NumberOfFreeBlockLists is the number of free block lists of buddy systems.
-	NumberOfFreeBlockLists = maxBlockSizeShift - minBlockSizeShift + 1
 )
 
 // Buddy represents a buddy system.
@@ -27,7 +24,7 @@ type Buddy struct {
 	mappedSpaceSize       int
 	allocatedSpaceSize    int
 	blockAllocationBitmap blockAllocationBitmap
-	rbTreesOfFreeBlocks   [NumberOfFreeBlockLists]rbtree.RBTree
+	rbTreesOfFreeBlocks   [numberOfFreeBlockLists]rbtree.RBTree
 }
 
 // Init initializes the buddy system with the given space mapper and returns it.
@@ -93,8 +90,8 @@ func (b *Buddy) FreeBlock(block int64) error {
 	b.allocatedSpaceSize -= blockSize
 
 	if shrinkUsedSpace {
-		if freeBlockListIndex == NumberOfFreeBlockLists-1 {
-			rbTreeOfFreeBlocks := &b.rbTreesOfFreeBlocks[NumberOfFreeBlockLists-1]
+		if freeBlockListIndex == numberOfFreeBlockLists-1 {
+			rbTreeOfFreeBlocks := &b.rbTreesOfFreeBlocks[numberOfFreeBlockLists-1]
 
 			for {
 				blockPrev := block - int64(MaxBlockSize)
@@ -142,7 +139,7 @@ func (b *Buddy) GetBlockSize(block int64) (int, error) {
 
 // ShrinkSpace shrink the space of the buddy system.
 func (b *Buddy) ShrinkSpace() {
-	rbTreeOfFreeBlocks := &b.rbTreesOfFreeBlocks[NumberOfFreeBlockLists-1]
+	rbTreeOfFreeBlocks := &b.rbTreesOfFreeBlocks[numberOfFreeBlockLists-1]
 
 	for {
 		block := int64(b.spaceSize - MaxBlockSize)
@@ -194,7 +191,7 @@ func (b *Buddy) doAllocateBlock(freeBlockListIndex int) int64 {
 		return block
 	}
 
-	if freeBlockListIndex == NumberOfFreeBlockLists-1 {
+	if freeBlockListIndex == numberOfFreeBlockLists-1 {
 		return b.expandSpace()
 	}
 
@@ -207,7 +204,7 @@ func (b *Buddy) doAllocateBlock(freeBlockListIndex int) int64 {
 func (b *Buddy) doFreeBlock(block *int64, freeBlockListIndex *int) {
 	rbTreeOfFreeBlocks := &b.rbTreesOfFreeBlocks[*freeBlockListIndex]
 
-	if *freeBlockListIndex == NumberOfFreeBlockLists-1 {
+	if *freeBlockListIndex == numberOfFreeBlockLists-1 {
 		rbTreeOfFreeBlocks.AddKey(*block)
 		return
 	}
@@ -291,13 +288,14 @@ var (
 	// to allocate from buddy systems.
 	ErrBlockTooLarge = errors.New("buddy: block too large")
 
-	// ErrInvalidBlock is returned when freeing or getting size of an invalid block
+	// ErrInvalidBlock is returned when freeing or getting size of an invalid block.
 	ErrInvalidBlock = errors.New("buddy: invalid block")
 )
 
 const (
-	minBlockSizeShift = 12 // log2 of 4Ki
-	maxBlockSizeShift = 32 // log2 of 4Gi
+	minBlockSizeShift      = 12 // log2 of 4Ki
+	maxBlockSizeShift      = 32 // log2 of 4Gi
+	numberOfFreeBlockLists = maxBlockSizeShift - minBlockSizeShift + 1
 )
 
 func locateFreeBlockList(blockSize int) int {

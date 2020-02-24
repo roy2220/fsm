@@ -96,16 +96,22 @@ func (basb blockAllocationSubBitmap) GetFreeBlocks(callback func(int64, int)) {
 func (basb blockAllocationSubBitmap) doGetBlockSize(block int64) (int, int, bool) {
 	blockSizeShift := minBlockSizeShift
 	bitPos := locateBit(block, blockSizeShift)
+	rightChildBitPos := -1
 
 	for {
 		if basb.testBit(bitPos) {
+			if rightChildBitPos >= 0 && basb.testBit(rightChildBitPos) {
+				return 0, 0, false
+			}
+
 			return blockSizeShift, bitPos, true
 		}
 
-		if !bitIsLeft(bitPos) || basb.testBit(locateRightSiblingBit(bitPos)) {
+		if !bitIsLeft(bitPos) {
 			return 0, 0, false
 		}
 
+		rightChildBitPos = locateRightSiblingBit(bitPos)
 		blockSizeShift++
 		bitPos = locateParentBit(bitPos)
 	}
