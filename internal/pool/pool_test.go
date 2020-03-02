@@ -69,10 +69,10 @@ func TestPoolFreeSpace(t *testing.T) {
 	b.ShrinkSpace()
 	assert.Equal(t, 0, b.SpaceSize())
 	assert.Equal(t, 0, p.DismissedSpaceSize())
-	buf := [list.Size]byte{}
-	p.StorePooledBlockList(&buf)
-	l := new(list.List).Init()
-	l.Load(&buf)
+	buf := [list.Size64]byte{}
+	p.StorePooledBlockList(buf[:])
+	l := new(list.List64).Init()
+	l.Load(buf[:])
 
 	if !assert.True(t, l.IsEmpty()) {
 		p.Fprint(os.Stdout)
@@ -106,7 +106,7 @@ func MakePool(t *testing.T) (*pool.Pool, *buddy.Buddy, []*SpaceInfo) {
 }
 
 func MakeSpaceInfo(t *testing.T, pool1 *pool.Pool) *SpaceInfo {
-	ss := rand.Intn(pool.BlockSize)
+	ss := rand.Intn(4096)
 	f := rand.Float64()
 	f *= f
 	f *= f

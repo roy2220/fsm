@@ -2,7 +2,7 @@
 all: vet lint test
 
 .PHONY: vet
-vet:
+vet: internal/list/list32.go internal/list/list32_test.go
 	go vet ./...
 
 .PHONY: lint
@@ -12,3 +12,9 @@ lint:
 .PHONY: test
 test:
 	go test -coverprofile=coverage.txt -covermode=count ./...
+
+internal/list/list32.go: internal/list/list64.go
+	sed -e 's/64/32/g' $< > $@
+
+internal/list/list32_test.go: internal/list/list64_test.go
+	sed -e 's/64/32/g' $< > $@

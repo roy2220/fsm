@@ -123,7 +123,7 @@ func (fs *FileStorage) loadFile() error {
 	}
 
 	var fileHeader fileHeader
-	fileHeader.Deserialize(&buffer)
+	fileHeader.Deserialize(buffer[:])
 	blockAllocationBitmap := make([]byte, fileHeader.BlockAllocationBitmapSize)
 
 	if _, err := fs.spaceMapper.File.ReadAt(
@@ -144,7 +144,7 @@ func (fs *FileStorage) loadFile() error {
 		SetAllocatedSpaceSize(int(fileHeader.AllocatedSpaceSize)).
 		SetBlockAllocationBitmap(blockAllocationBitmap)
 	poolBuilder := fs.pool.Build()
-	poolBuilder.LoadPooledBlockList(&fileHeader.PooledBlockList).
+	poolBuilder.LoadPooledBlockList(fileHeader.PooledBlockList[:]).
 		SetDismissedSpaceSize(int(fileHeader.DismissedSpaceSize))
 	fs.primarySpace = fileHeader.PrimarySpace
 	return nil
@@ -163,14 +163,14 @@ func (fs *FileStorage) storeFile() error {
 		PrimarySpace:              fs.primarySpace,
 	}
 
-	fs.pool.StorePooledBlockList(&fileHeader.PooledBlockList)
+	fs.pool.StorePooledBlockList(fileHeader.PooledBlockList[:])
 
 	if err := fs.spaceMapper.Close(); err != nil {
 		return err
 	}
 
 	buffer := [fileHeaderSize]byte{}
-	fileHeader.Serialize(&buffer)
+	fileHeader.Serialize(buffer[:])
 
 	if _, err := fs.spaceMapper.File.WriteAt(buffer[:], 0); err != nil {
 		return err

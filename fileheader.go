@@ -15,12 +15,13 @@ type fileHeader struct {
 	MappedSpaceSize           int64
 	AllocatedSpaceSize        int64
 	BlockAllocationBitmapSize int64
-	PooledBlockList           [list.Size]byte
+	PooledBlockList           [list.Size64]byte
 	DismissedSpaceSize        int64
 	PrimarySpace              int64
 }
 
-func (fh *fileHeader) Serialize(buffer *[fileHeaderSize]byte) {
+func (fh *fileHeader) Serialize(buffer []byte) {
+	_ = buffer[fileHeaderSize-1]
 	i := 0
 	binary.BigEndian.PutUint64(buffer[i:], uint64(fh.SpaceSize))
 	i += 8
@@ -44,7 +45,8 @@ func (fh *fileHeader) Serialize(buffer *[fileHeaderSize]byte) {
 	}
 }
 
-func (fh *fileHeader) Deserialize(data *[fileHeaderSize]byte) {
+func (fh *fileHeader) Deserialize(data []byte) {
+	_ = data[fileHeaderSize-1]
 	i := 0
 	fh.SpaceSize = int64(binary.BigEndian.Uint64(data[i:]))
 	i += 8

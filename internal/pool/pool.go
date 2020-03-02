@@ -2,7 +2,6 @@
 package pool
 
 import (
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -11,13 +10,10 @@ import (
 	"github.com/roy2220/fsm/internal/list"
 )
 
-// BlockSize is the block size of the pool.
-const BlockSize = buddy.MinBlockSize
-
 // Pool represents a pool of space.
 type Pool struct {
 	buddy              *buddy.Buddy
-	listOfPooledBlocks list.List
+	listOfPooledBlocks list.List64
 	dismissedSpaceSize int
 }
 
@@ -45,13 +41,13 @@ func (p *Pool) AllocateSpace(spaceSize int) (int64, int) {
 		return makeChunkSpace(block, chunk), calculateChunkSpaceSize(chunkSize)
 	}
 
-	block, blockSize, err := p.buddy.AllocateBlock(spaceSize)
+	unmanagedBlock, unmanagedBlockSize, err := p.buddy.AllocateBlock(spaceSize)
 
 	if err != nil {
 		panic(err)
 	}
 
-	return block, blockSize
+	return unmanagedBlock, unmanagedBlockSize
 }
 
 // FreeSpace releases the given space back to the pool.
@@ -72,17 +68,17 @@ func (p *Pool) GetSpaceSize(space int64) int {
 		return calculateChunkSpaceSize(p.getChunkSize(block, chunk))
 	}
 
-	blockSize, err := p.buddy.GetBlockSize(space)
+	unmanagedBlockSize, err := p.buddy.GetBlockSize(space)
 
 	if err != nil {
 		panic(err)
 	}
 
-	return blockSize
+	return unmanagedBlockSize
 }
 
 // StorePooledBlockList stores the pooled block list of the pool to the given buffer.
-func (p *Pool) StorePooledBlockList(buffer *[list.Size]byte) {
+func (p *Pool) StorePooledBlockList(buffer []byte) {
 	p.listOfPooledBlocks.Store(buffer)
 }
 
@@ -108,25 +104,9 @@ func (p *Pool) allocateChunk(chunkSize int) (int64, int32, int) {
 	spaceAccessor := p.buddy.SpaceMapper().AccessSpace()
 
 	for block, ok := getBlock(spaceAccessor); ok; block, ok = getBlock(spaceAccessor) {
-		blockHeader := blockHeader(accessBlock(spaceAccessor, block))
-
-		if chunkSize2 := int(blockHeader.MaxFreeChunkSize()); !(chunkSize2 >= 1 && chunkSize > chunkSize2) {
-			if chunk, chunkSize, ok := p.splitChunk(spaceAccessor, block, chunkSize); ok {
-				blockHeader.SetMissCount(0)
-				return block, chunk, chunkSize
-			}
+		if chunk, chunkSize, ok := p.splitChunk(spaceAccessor, block, chunkSize); ok {
+			return block, chunk, chunkSize
 		}
-
-		missCount := blockHeader.MissCount() + 1
-		blockHeader.SetMissCount(missCount)
-
-		if missCount < maxMissCount {
-			continue
-		}
-
-		blockHeader.SetState(blockDismissed)
-		p.listOfPooledBlocks.RemoveItem(spaceAccessor, block)
-		p.dismissedSpaceSize += int(blockHeader.TotalFreeChunkSize())
 	}
 
 	block, chunk := p.allocateBlock(chunkSize)
@@ -135,207 +115,164 @@ func (p *Pool) allocateChunk(chunkSize int) (int64, int32, int) {
 
 func (p *Pool) freeChunk(block int64, chunk int32) {
 	spaceAccessor := p.accessSpace()
-	blockHeader := blockHeader(accessBlock(spaceAccessor, block))
 
-	if missCount := blockHeader.MissCount(); missCount >= 1 {
-		if blockHeader.State() == blockDismissed {
-			blockHeader.SetMissCount(0)
-			blockHeader.SetState(blockPooled)
-			p.listOfPooledBlocks.AppendItem(spaceAccessor, block)
-			p.dismissedSpaceSize -= int(blockHeader.TotalFreeChunkSize())
-		} else {
-			blockHeader.SetMissCount(missCount - 1)
-		}
-	}
-
-	if chunkSize := p.mergeChunk(spaceAccessor, block, chunk); chunkSize > maxChunkSize {
+	if chunkSize := p.mergeChunk(spaceAccessor, block, chunk); chunkSize == blockPayloadSize {
 		p.freeBlock(spaceAccessor, block)
 	}
 }
 
 func (p *Pool) getChunkSize(block int64, chunk int32) int {
-	chunkHeader := chunkHeader(accessBlock(p.accessSpace(), block)[chunk:])
+	chunkController := chunkController{accessBlock(p.accessSpace(), block), chunk}
 
-	if chunkHeader.Next() != chunkAllocationMark {
+	if !chunkController.IsUsed() {
 		panic(errInvalidChunk)
 	}
 
-	return int(chunkHeader.Size())
+	return int(chunkController.Size())
 }
 
 func (p *Pool) splitChunk(spaceAccessor []byte, block int64, chunkSize int) (int32, int, bool) {
 	blockAccessor := accessBlock(spaceAccessor, block)
 	blockHeader := blockHeader(blockAccessor)
-	chunk := blockHeader.FirstFreeChunk()
-	lastChunkHeader := chunkHeader(nil)
-	maxChunkSize2 := 0
+	listOfFreeChunks := blockHeader.ListOfFreeChunks()
+	getChunk := getFreeChunks(listOfFreeChunks)
 
-	for {
-		chunkHeader1 := chunkHeader(blockAccessor[chunk:])
-		chunkSize2 := int(chunkHeader1.Size())
-		chunkNext := chunkHeader1.Next()
+	for chunk, ok := getChunk(blockAccessor); ok; chunk, ok = getChunk(blockAccessor) {
+		chunkController1 := chunkController{blockAccessor, chunk}
+		chunkSize2 := int(chunkController1.Size())
 
 		if remainingChunkSize := chunkSize2 - chunkSize; remainingChunkSize >= 0 {
-			chunkHeader1.SetNext(chunkAllocationMark)
-
 			if remainingChunkSize < minChunkSize {
 				chunkSize = chunkSize2
 				remainingChunkSize = 0
 			} else {
-				chunkHeader1.SetSize(int32(chunkSize))
-				remainingChunk := chunk + int32(chunkSize)
-				remainingChunkHeader := chunkHeader(blockAccessor[remainingChunk:])
-				remainingChunkHeader.SetNext(chunkNext)
-				remainingChunkHeader.SetSize(int32(remainingChunkSize))
-				chunkNext = remainingChunk
-			}
-
-			if lastChunkHeader == nil {
-				blockHeader.SetFirstFreeChunk(chunkNext)
-			} else {
-				lastChunkHeader.SetNext(chunkNext)
-			}
-
-			totalChunkSize := int(blockHeader.TotalFreeChunkSize()) - chunkSize
-			blockHeader.SetTotalFreeChunkSize(int32(totalChunkSize))
-			p.listOfPooledBlocks.SetHead(spaceAccessor, block)
-
-			if totalChunkSize == 0 {
-				blockHeader.SetMaxFreeChunkSize(0)
-				blockHeader.SetState(blockExhausted)
-				p.listOfPooledBlocks.RemoveItem(spaceAccessor, block)
-			} else {
-				if remainingChunkSize >= totalChunkSize-remainingChunkSize {
-					blockHeader.SetMaxFreeChunkSize(int32(remainingChunkSize))
-				} else {
-					if chunkSize3 := int(blockHeader.MaxFreeChunkSize()); chunkSize3 >= 1 && chunkSize2 == chunkSize3 {
-						blockHeader.SetMaxFreeChunkSize(0)
+				if chunkIsViolated(chunk + int32(chunkSize)) {
+					if remainingChunkSize == minChunkSize {
+						chunkSize = chunkSize2
+						remainingChunkSize = 0
+					} else {
+						chunkSize++
+						remainingChunkSize--
 					}
 				}
+			}
+
+			if remainingChunkSize >= 1 {
+				remainingChunkController := chunkController{blockAccessor, chunk + int32(chunkSize)}
+				remainingChunkController.SetUsed(false)
+				listOfChunks := blockHeader.ListOfChunks()
+				remainingChunkController.InsertAfter(&listOfChunks, chunk)
+				blockHeader.SetListOfChunks(listOfChunks)
+				remainingChunkController.SetMissCount(0)
+				remainingChunkController.InsertFreeAfter(&listOfFreeChunks, chunk)
+			}
+
+			chunkController1.SetUsed(true)
+			chunkController1.SetAsFirstFree(&listOfFreeChunks)
+			chunkController1.RemoveFree(&listOfFreeChunks)
+			blockHeader.SetListOfFreeChunks(listOfFreeChunks)
+			p.listOfPooledBlocks.SetHead(spaceAccessor, block)
+
+			if listOfFreeChunks.IsEmpty() {
+				p.listOfPooledBlocks.RemoveItem(spaceAccessor, block)
 			}
 
 			return chunk, chunkSize, true
 		}
 
-		if chunkSize2 > maxChunkSize2 {
-			maxChunkSize2 = chunkSize2
-		}
+		missCount := int(chunkController1.MissCount()) + 1
+		chunkController1.SetMissCount(int8(missCount))
 
-		lastChunkHeader = chunkHeader1
-		chunk = chunkNext
-
-		if chunk < 1 {
-			break
+		if missCount == maxMissCount {
+			chunkController1.RemoveFree(&listOfFreeChunks)
+			p.dismissedSpaceSize += chunkSize2
 		}
 	}
 
-	blockHeader.SetMaxFreeChunkSize(int32(maxChunkSize2))
+	blockHeader.SetListOfFreeChunks(listOfFreeChunks)
+
+	if listOfFreeChunks.IsEmpty() {
+		p.listOfPooledBlocks.RemoveItem(spaceAccessor, block)
+	}
+
 	return 0, 0, false
 }
 
 func (p *Pool) mergeChunk(spaceAccessor []byte, block int64, chunk int32) int {
 	blockAccessor := accessBlock(spaceAccessor, block)
-	chunkHeader1 := chunkHeader(blockAccessor[chunk:])
+	chunkController1 := chunkController{blockAccessor, chunk}
 
-	if chunkHeader1.Next() != chunkAllocationMark {
+	if !chunkController1.IsUsed() {
 		panic(errInvalidChunk)
 	}
 
-	chunkSize := int(chunkHeader1.Size())
-	chunkEnd := chunk + int32(chunkSize)
 	blockHeader := blockHeader(blockAccessor)
-	chunk2 := blockHeader.FirstFreeChunk()
-	lastChunkHeader2 := chunkHeader(nil)
+	listOfChunks := blockHeader.ListOfChunks()
+	listOfFreeChunks := blockHeader.ListOfFreeChunks()
+	listOfFreeChunksWasEmpty := listOfFreeChunks.IsEmpty()
 
-	for {
-		if chunk2 < 1 {
-			chunkHeader1.SetNext(0)
-
-			if lastChunkHeader2 == nil {
-				blockHeader.SetFirstFreeChunk(chunk)
+	if chunkPrev := chunkController1.Prev(); chunkPrev < chunk {
+		if chunkPrevController := (chunkController{blockAccessor, chunkPrev}); !chunkPrevController.IsUsed() {
+			if chunkPrevController.MissCount() == maxMissCount {
+				p.dismissedSpaceSize -= int(chunkPrevController.Size())
 			} else {
-				lastChunkHeader2.SetNext(chunk)
+				chunkPrevController.RemoveFree(&listOfFreeChunks)
 			}
 
-			break
+			chunkController1.Remove(&listOfChunks)
+			chunkController1 = chunkPrevController
 		}
-
-		chunkHeader2 := chunkHeader(blockAccessor[chunk2:])
-		chunkEnd2 := chunk2 + chunkHeader2.Size()
-		chunkNext2 := chunkHeader2.Next()
-
-		if chunkEnd <= chunk2 {
-			if chunkEnd < chunk2 {
-				chunkHeader1.SetNext(chunk2)
-			} else {
-				chunkHeader1.SetNext(chunkNext2)
-				chunkHeader1.SetSize(chunkEnd2 - chunk)
-				chunkEnd = chunkEnd2
-			}
-
-			if lastChunkHeader2 == nil {
-				blockHeader.SetFirstFreeChunk(chunk)
-			} else {
-				lastChunkHeader2.SetNext(chunk)
-			}
-
-			break
-		}
-
-		if chunk == chunkEnd2 {
-			chunkHeader2.SetSize(chunkEnd - chunk2)
-			chunkHeader1.SetNext(0)
-			chunk, chunkHeader1 = chunk2, chunkHeader2
-		} else {
-			lastChunkHeader2 = chunkHeader2
-		}
-
-		chunk2 = chunkNext2
 	}
 
-	totalChunkSize := int(blockHeader.TotalFreeChunkSize()) + chunkSize
-	blockHeader.SetTotalFreeChunkSize(int32(totalChunkSize))
-	chunkSize = int(chunkEnd - chunk)
-
-	if blockState := blockHeader.State(); blockState == blockExhausted {
-		blockHeader.SetMaxFreeChunkSize(int32(chunkSize))
-		blockHeader.SetState(blockPooled)
-		p.listOfPooledBlocks.PrependItem(spaceAccessor, block)
-	} else {
-		if chunkSize >= totalChunkSize-chunkSize {
-			blockHeader.SetMaxFreeChunkSize(int32(chunkSize))
-		} else {
-			if chunkSize2 := int(blockHeader.MaxFreeChunkSize()); chunkSize2 >= 1 && chunkSize > chunkSize2 {
-				blockHeader.SetMaxFreeChunkSize(int32(chunkSize))
+	if chunkNext := chunkController1.Next(); chunkNext > chunk {
+		if chunkNextController := (chunkController{blockAccessor, chunkNext}); !chunkNextController.IsUsed() {
+			if chunkNextController.MissCount() == maxMissCount {
+				p.dismissedSpaceSize -= int(chunkNextController.Size())
+			} else {
+				chunkNextController.RemoveFree(&listOfFreeChunks)
 			}
-		}
 
+			chunkNextController.Remove(&listOfChunks)
+		}
+	}
+
+	chunkController1.SetUsed(false)
+	chunkController1.SetMissCount(0)
+	chunkController1.PrependFree(&listOfFreeChunks)
+	blockHeader.SetListOfChunks(listOfChunks)
+	blockHeader.SetListOfFreeChunks(listOfFreeChunks)
+
+	if !listOfFreeChunksWasEmpty {
 		p.listOfPooledBlocks.RemoveItem(spaceAccessor, block)
-		p.listOfPooledBlocks.PrependItem(spaceAccessor, block)
 	}
 
-	return chunkSize
+	p.listOfPooledBlocks.PrependItem(spaceAccessor, block)
+	return int(chunkController1.Size())
 }
 
 func (p *Pool) allocateBlock(chunkSize int) (int64, int32) {
-	block, _, _ := p.buddy.AllocateBlock(BlockSize)
+	block, _, _ := p.buddy.AllocateBlock(blockSize)
 	spaceAccessor := p.accessSpace()
 	blockAccessor := accessBlock(spaceAccessor, block)
 	chunk := int32(blockHeaderSize)
-	chunkHeader1 := chunkHeader(blockAccessor[chunk:])
-	chunkHeader1.SetNext(chunkAllocationMark)
-	chunkHeader1.SetSize(int32(chunkSize))
-	remainingChunk := chunk + int32(chunkSize)
-	remainingChunkHeader := chunkHeader(blockAccessor[remainingChunk:])
-	remainingChunkHeader.SetNext(0)
-	remainingChunkSize := BlockSize - int(remainingChunk)
-	remainingChunkHeader.SetSize(int32(remainingChunkSize))
+
+	if chunkIsViolated(chunk + int32(chunkSize)) {
+		chunkSize++
+	}
+
+	chunkController1 := chunkController{blockAccessor, chunk}
+	chunkController1.SetUsed(true)
+	listOfChunks := new(list.List32).Init()
+	chunkController1.Prepend(listOfChunks)
+	remainingChunkController := chunkController{blockAccessor, chunk + int32(chunkSize)}
+	remainingChunkController.SetUsed(false)
+	remainingChunkController.InsertAfter(listOfChunks, chunk)
+	remainingChunkController.SetMissCount(0)
+	listOfFreeChunks := new(list.List32).Init()
+	remainingChunkController.PrependFree(listOfFreeChunks)
 	blockHeader := blockHeader(blockAccessor)
-	blockHeader.SetFirstFreeChunk(remainingChunk)
-	blockHeader.SetTotalFreeChunkSize(int32(remainingChunkSize))
-	blockHeader.SetMaxFreeChunkSize(int32(remainingChunkSize))
-	blockHeader.SetMissCount(0)
-	blockHeader.SetState(blockPooled)
+	blockHeader.SetListOfChunks(*listOfChunks)
+	blockHeader.SetListOfFreeChunks(*listOfFreeChunks)
 	p.listOfPooledBlocks.PrependItem(spaceAccessor, block)
 	return block, chunk
 }
@@ -356,16 +293,22 @@ func (p *Pool) doFprint(writer io.Writer, spaceAccessor []byte, block int64) err
 
 	blockAccessor := accessBlock(spaceAccessor, block)
 	blockHeader := blockHeader(blockAccessor)
-	chunk := blockHeader.FirstFreeChunk()
+	listOfChunks := blockHeader.ListOfChunks()
+	getChunk := listOfChunks.GetItems()
 
-	for chunk >= 1 {
-		chunkHeader := chunkHeader(blockAccessor[chunk:])
+	for chunk, ok := getChunk(blockAccessor); ok; chunk, ok = getChunk(blockAccessor) {
+		chunkController := chunkController{blockAccessor, chunk}
+		var err error
 
-		if _, err := fmt.Fprintf(writer, " [%d, %d]", chunk, chunk+chunkHeader.Size()); err != nil {
-			return err
+		if chunkController.IsUsed() {
+			_, err = fmt.Fprintf(writer, " (%d, %d)", chunk, chunk+chunkController.Size())
+		} else {
+			_, err = fmt.Fprintf(writer, " [%d, %d]", chunk, chunk+chunkController.Size())
 		}
 
-		chunk = chunkHeader.Next()
+		if err != nil {
+			return err
+		}
 	}
 
 	if _, err := fmt.Fprintln(writer, ""); err != nil {
@@ -381,7 +324,7 @@ type Builder struct {
 }
 
 // LoadPooledBlockList loads the pooled block list from the given data.
-func (b Builder) LoadPooledBlockList(data *[list.Size]byte) Builder {
+func (b Builder) LoadPooledBlockList(data []byte) Builder {
 	b.p.listOfPooledBlocks.Load(data)
 	return b
 }
@@ -393,83 +336,127 @@ func (b Builder) SetDismissedSpaceSize(dismissedSpaceSize int) Builder {
 }
 
 const (
-	minChunkSize        = chunkHeaderSize + 8
-	maxChunkSize        = BlockSize - blockHeaderSize - minChunkSize
-	maxMissCount        = 3
-	chunkAllocationMark = -0xBADBEEF
-)
-
-const (
-	blockPooled = blockState(iota)
-	blockDismissed
-	blockExhausted
+	blockSize             = 1 << 20
+	blockPayloadSize      = blockSize - blockHeaderSize
+	minChunkSize          = freeChunkHeaderSize
+	maxChunkSize          = blockPayloadSize / 16
+	minUnmanagedBlockSize = (maxChunkSize + (buddy.MinBlockSize - 1)) &^ (buddy.MinBlockSize - 1)
+	maxMissCount          = 3
 )
 
 type blockHeader []byte
 
-func (bh blockHeader) SetFirstFreeChunk(firstFreeChunk int32) {
-	binary.BigEndian.PutUint32(bh[list.ItemSize:], uint32(firstFreeChunk))
+func (bh blockHeader) SetListOfChunks(listOfChunks list.List32) {
+	listOfChunks.Store(bh[list.ItemSize64:])
 }
 
-func (bh blockHeader) FirstFreeChunk() int32 {
-	return int32(binary.BigEndian.Uint32(bh[list.ItemSize:]))
+func (bh blockHeader) ListOfChunks() list.List32 {
+	var listOfChunks list.List32
+	listOfChunks.Load(bh[list.ItemSize64:])
+	return listOfChunks
 }
 
-func (bh blockHeader) SetTotalFreeChunkSize(totalFreeChunkSize int32) {
-	binary.BigEndian.PutUint32(bh[list.ItemSize+4:], uint32(totalFreeChunkSize))
+func (bh blockHeader) SetListOfFreeChunks(listOfFreeChunks list.List32) {
+	listOfFreeChunks.Store(bh[list.ItemSize64+list.Size32:])
 }
 
-func (bh blockHeader) TotalFreeChunkSize() int32 {
-	return int32(binary.BigEndian.Uint32(bh[list.ItemSize+4:]))
+func (bh blockHeader) ListOfFreeChunks() list.List32 {
+	var listOfFreeChunks list.List32
+	listOfFreeChunks.Load(bh[list.ItemSize64+list.Size32:])
+	return listOfFreeChunks
 }
 
-func (bh blockHeader) SetMaxFreeChunkSize(maxFreeChunkSize int32) {
-	binary.BigEndian.PutUint32(bh[list.ItemSize+8:], uint32(maxFreeChunkSize))
+const blockHeaderSize = list.ItemSize64 + 2*list.Size32
+
+type chunkController struct {
+	blockAccessor []byte
+	c             int32
 }
 
-func (bh blockHeader) MaxFreeChunkSize() int32 {
-	return int32(binary.BigEndian.Uint32(bh[list.ItemSize+8:]))
+func (cc chunkController) SetUsed(isUsed bool) {
+	var flags int8
+
+	if isUsed {
+		flags = int8(cc.c%3 + 1)
+	} else {
+		flags = 0
+	}
+
+	list.SetItem32Flags(cc.blockAccessor, cc.c, flags)
 }
 
-func (bh blockHeader) SetMissCount(missCount int8) {
-	bh[list.ItemSize+12] = byte(missCount)
+func (cc chunkController) Prepend(listOfChunks *list.List32) {
+	listOfChunks.PrependItem(cc.blockAccessor, cc.c)
 }
 
-func (bh blockHeader) MissCount() int8 {
-	return int8(bh[list.ItemSize+12])
+func (cc chunkController) InsertAfter(listOfChunks *list.List32, other int32) {
+	listOfChunks.InsertItemAfter(cc.blockAccessor, cc.c, other)
 }
 
-func (bh blockHeader) SetState(state blockState) {
-	bh[list.ItemSize+13] = byte(state)
+func (cc chunkController) Remove(listOfChunks *list.List32) {
+	listOfChunks.RemoveItem(cc.blockAccessor, cc.c)
 }
 
-func (bh blockHeader) State() blockState {
-	return blockState(bh[list.ItemSize+13])
+func (cc chunkController) IsUsed() bool {
+	return list.Item32Flags(cc.blockAccessor, cc.c) == int8(cc.c%3+1)
 }
 
-const blockHeaderSize = list.ItemSize + 14
-
-type blockState int
-
-type chunkHeader []byte
-
-func (ch chunkHeader) SetNext(next int32) {
-	binary.BigEndian.PutUint32(ch[0:], uint32(next))
+func (cc chunkController) Prev() int32 {
+	return list.Item32Prev(cc.blockAccessor, cc.c)
 }
 
-func (ch chunkHeader) Next() int32 {
-	return int32(binary.BigEndian.Uint32(ch[0:]))
+func (cc chunkController) Next() int32 {
+	return list.Item32Next(cc.blockAccessor, cc.c)
 }
 
-func (ch chunkHeader) SetSize(size int32) {
-	binary.BigEndian.PutUint32(ch[4:], uint32(size))
+func (cc chunkController) Size() int32 {
+	chunkEnd := cc.Next()
+
+	if chunkEnd <= cc.c {
+		chunkEnd = blockSize
+	}
+
+	return chunkEnd - cc.c
 }
 
-func (ch chunkHeader) Size() int32 {
-	return int32(binary.BigEndian.Uint32(ch[4:]))
+const (
+	chunkHeaderSize           = list.ItemSize32
+	freeListItemOffsetOfChunk = chunkHeaderSize
+)
+
+func (cc chunkController) SetMissCount(missCount int8) {
+	list.SetItem32Flags(cc.blockAccessor, cc.c+freeListItemOffsetOfChunk, missCount)
 }
 
-const chunkHeaderSize = 8
+func (cc chunkController) PrependFree(listOfFreeChunks *list.List32) {
+	listOfFreeChunks.PrependItem(cc.blockAccessor, cc.c+freeListItemOffsetOfChunk)
+}
+
+func (cc chunkController) InsertFreeAfter(listOfFreeChunks *list.List32, other int32) {
+	listOfFreeChunks.InsertItemAfter(cc.blockAccessor, cc.c+freeListItemOffsetOfChunk, other+freeListItemOffsetOfChunk)
+}
+
+func (cc chunkController) RemoveFree(listOfFreeChunks *list.List32) {
+	listOfFreeChunks.RemoveItem(cc.blockAccessor, cc.c+freeListItemOffsetOfChunk)
+}
+
+func (cc chunkController) SetAsFirstFree(listOfFreeChunks *list.List32) {
+	listOfFreeChunks.SetHead(cc.blockAccessor, cc.c+freeListItemOffsetOfChunk)
+}
+
+func (cc chunkController) MissCount() int8 {
+	return list.Item32Flags(cc.blockAccessor, cc.c+freeListItemOffsetOfChunk)
+}
+
+func (cc chunkController) FreePrev() int32 {
+	return list.Item32Prev(cc.blockAccessor, cc.c+freeListItemOffsetOfChunk) - freeListItemOffsetOfChunk
+}
+
+func (cc chunkController) FreeNext() int32 {
+	return list.Item32Next(cc.blockAccessor, cc.c+freeListItemOffsetOfChunk) - freeListItemOffsetOfChunk
+}
+
+const freeChunkHeaderSize = freeListItemOffsetOfChunk + list.ItemSize32
 
 var errInvalidChunk = errors.New("pool: invalid chunk")
 
@@ -478,14 +465,17 @@ func makeChunkSpace(block int64, chunk int32) int64 {
 }
 
 func parseChunkSpace(chunkSpace int64) (int64, int32, bool) {
-	block := chunkSpace &^ (BlockSize - 1)
-
-	if chunkSpace == block {
+	if chunkSpace&(minUnmanagedBlockSize-1) == 0 {
 		return 0, 0, false
 	}
 
-	chunk := int32((chunkSpace & (BlockSize - 1))) - chunkHeaderSize
+	block := chunkSpace &^ (blockSize - 1)
+	chunk := int32((chunkSpace & (blockSize - 1))) - chunkHeaderSize
 	return block, chunk, true
+}
+
+func chunkIsViolated(chunk int32) bool {
+	return (chunk+chunkHeaderSize)&(minUnmanagedBlockSize-1) == 0
 }
 
 func calculateChunkSpaceSize(chunkSize int) int {
@@ -493,5 +483,20 @@ func calculateChunkSpaceSize(chunkSize int) int {
 }
 
 func accessBlock(spaceAccessor []byte, block int64) []byte {
-	return spaceAccessor[block : block+BlockSize]
+	return spaceAccessor[block : block+blockSize]
+}
+
+func getFreeChunks(listOfFreeChunks list.List32) func([]byte) (int32, bool) {
+	getListItemOfFreeChunk := listOfFreeChunks.GetItems()
+
+	return func(spaceAccessor []byte) (int32, bool) {
+		freeListItemOfChunk, ok := getListItemOfFreeChunk(spaceAccessor)
+
+		if !ok {
+			return 0, false
+		}
+
+		chunk := freeListItemOfChunk - freeListItemOffsetOfChunk
+		return chunk, true
+	}
 }
