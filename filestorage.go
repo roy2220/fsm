@@ -20,6 +20,7 @@ type FileStorage struct {
 func (fs *FileStorage) Init() *FileStorage {
 	fs.buddy.Init(&fs.spaceMapper)
 	fs.pool.Init(&fs.buddy)
+	fs.primarySpace = -1
 	return fs
 }
 

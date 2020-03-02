@@ -17,8 +17,9 @@ type SpaceMapper struct {
 }
 
 type SpaceInfo struct {
-	Ptr  int64
-	Size int
+	Ptr       int64
+	AllocSize int32
+	Size      int32
 }
 
 func (sm *SpaceMapper) MapSpace(spaceSize int) error {
@@ -44,7 +45,7 @@ func TestPoolAllocateSpace(t *testing.T) {
 	for _, si := range sis {
 		assert.GreaterOrEqual(t, si.Ptr, lastSpaceEnd)
 		ss := p.GetSpaceSize(si.Ptr)
-		assert.Equal(t, si.Size, ss)
+		assert.Equal(t, int(si.Size), ss)
 		lastSpaceEnd = si.Ptr + int64(si.Size)
 	}
 }
@@ -84,18 +85,18 @@ func MakePool(t *testing.T) (*pool.Pool, *buddy.Buddy, []*SpaceInfo) {
 	buddy := new(buddy.Buddy).Init(&spaceMapper)
 	pool1 := new(pool.Pool).Init(buddy)
 	sis := make([]*SpaceInfo, 1000000)
-	tss2 := 0
+	tss2 := int32(0)
 
 	for i := range sis {
 		sis[i] = MakeSpaceInfo(t, pool1)
-		tss2 += sis[i].Size
+		tss2 += sis[i].AllocSize
 
 		if i%2 == 1 {
 			j := rand.Intn(i + 1)
 			pool1.FreeSpace(sis[j].Ptr)
-			tss2 -= sis[j].Size
+			tss2 -= sis[j].AllocSize
 			sis[j] = MakeSpaceInfo(t, pool1)
-			tss2 += sis[j].Size
+			tss2 += sis[j].AllocSize
 		}
 	}
 
@@ -118,5 +119,5 @@ func MakeSpaceInfo(t *testing.T, pool1 *pool.Pool) *SpaceInfo {
 		t.FailNow()
 	}
 
-	return &SpaceInfo{sptr, ss2}
+	return &SpaceInfo{sptr, int32(ss), int32(ss2)}
 }

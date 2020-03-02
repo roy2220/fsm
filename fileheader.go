@@ -37,7 +37,7 @@ func (fh *fileHeader) Serialize(buffer []byte) {
 	i += len(fh.PooledBlockList)
 	binary.BigEndian.PutUint64(buffer[i:], uint64(fh.DismissedSpaceSize))
 	i += 8
-	binary.BigEndian.PutUint64(buffer[i:], uint64(fh.PrimarySpace))
+	binary.BigEndian.PutUint64(buffer[i:], ^uint64(fh.PrimarySpace))
 	i += 8
 
 	for ; i < fileHeaderSize; i++ {
@@ -62,6 +62,6 @@ func (fh *fileHeader) Deserialize(data []byte) {
 	i += len(fh.PooledBlockList)
 	fh.DismissedSpaceSize = int64(binary.BigEndian.Uint64(data[i:]))
 	i += 8
-	fh.PrimarySpace = int64(binary.BigEndian.Uint64(data[i:]))
+	fh.PrimarySpace = int64(^binary.BigEndian.Uint64(data[i:]))
 	i += 8
 }
