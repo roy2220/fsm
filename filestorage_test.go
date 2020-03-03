@@ -22,7 +22,7 @@ type Entry struct {
 var Rand = rand.New(rand.NewSource(time.Now().UnixNano()))
 
 func TestFileStorage(t *testing.T) {
-	const fn = "./test_storage"
+	const fn = "./test/filestorage.tmp"
 	defer func() { t.Log(os.Remove(fn)) }()
 	Store(t, fn)
 	Load(t, fn)
