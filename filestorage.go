@@ -39,7 +39,10 @@ func (fs *FileStorage) Open(fileName string, createFileIfNotExists bool) error {
 			return err
 		}
 
-		if _, err := file.WriteAt(make([]byte, fileHeaderSize), 0); err != nil {
+		rawFileHeader := make([]byte, fileHeaderSize)
+		copy(rawFileHeader, fileSignature)
+
+		if _, err := file.WriteAt(rawFileHeader, 0); err != nil {
 			file.Close()
 			return err
 		}
@@ -124,7 +127,11 @@ func (fs *FileStorage) loadFile() error {
 	}
 
 	var fileHeader fileHeader
-	fileHeader.Deserialize(buffer[:])
+
+	if err := fileHeader.Deserialize(buffer[:]); err != nil {
+		return err
+	}
+
 	blockAllocationBitmap := make([]byte, fileHeader.BlockAllocationBitmapSize)
 
 	if _, err := fs.spaceMapper.File.ReadAt(
