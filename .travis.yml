@@ -1,7 +1,20 @@
-language: go
+language: minimal
 
-go:
-  - 1.13
+services:
+  - docker
+
+cache:
+  directories:
+    - build/cache
+
+before_script:
+  - scripts/ci/builder-docker-image.sh load
+
+script:
+  - make USE_DOCKER=1
+
+before_cache:
+  - scripts/ci/builder-docker-image.sh store
 
 after_success:
   - bash <(curl -s https://codecov.io/bash)
