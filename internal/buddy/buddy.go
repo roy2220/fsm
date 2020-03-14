@@ -71,6 +71,17 @@ func (b *Buddy) AllocateBlock(blockSize int) (int64, int, error) {
 	return block, blockSize, nil
 }
 
+// MustAllocateBlock calls AllocateBlock and panics when an error occurs.
+func (b *Buddy) MustAllocateBlock(blockSize int) (int64, int) {
+	block, blockSize, err := b.AllocateBlock(blockSize)
+
+	if err != nil {
+		panic(err)
+	}
+
+	return block, blockSize
+}
+
 // FreeBlock releases the given block back to the buddy system.
 func (b *Buddy) FreeBlock(block int64) error {
 	if int(block) >= b.spaceSize {
@@ -122,6 +133,13 @@ func (b *Buddy) FreeBlock(block int64) error {
 	return nil
 }
 
+// MustFreeBlock calls FreeBlock and panics when an error occurs.
+func (b *Buddy) MustFreeBlock(block int64) {
+	if err := b.FreeBlock(block); err != nil {
+		panic(err)
+	}
+}
+
 // GetBlockSize returns the size of the given block of the buddy system.
 func (b *Buddy) GetBlockSize(block int64) (int, error) {
 	if int(block) >= b.spaceSize {
@@ -135,6 +153,17 @@ func (b *Buddy) GetBlockSize(block int64) (int, error) {
 	}
 
 	return 1 << blockSizeShift, nil
+}
+
+// MustGetBlockSize calls GetBlockSize and panics when an error occurs.
+func (b *Buddy) MustGetBlockSize(block int64) int {
+	blockSize, err := b.GetBlockSize(block)
+
+	if err != nil {
+		panic(err)
+	}
+
+	return blockSize
 }
 
 // ShrinkSpace shrink the space of the buddy system.

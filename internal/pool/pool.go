@@ -41,13 +41,7 @@ func (p *Pool) AllocateSpace(spaceSize int) (int64, int) {
 		return makeChunkSpace(block, chunk), calculateChunkSpaceSize(chunkSize)
 	}
 
-	unmanagedBlock, unmanagedBlockSize, err := p.buddy.AllocateBlock(spaceSize)
-
-	if err != nil {
-		panic(err)
-	}
-
-	return unmanagedBlock, unmanagedBlockSize
+	return p.buddy.MustAllocateBlock(spaceSize)
 }
 
 // FreeSpace releases the given space back to the pool.
@@ -57,9 +51,7 @@ func (p *Pool) FreeSpace(space int64) {
 		return
 	}
 
-	if err := p.buddy.FreeBlock(space); err != nil {
-		panic(err)
-	}
+	p.buddy.MustFreeBlock(space)
 }
 
 // GetSpaceSize returns the size of the given space of the pool.
@@ -68,13 +60,7 @@ func (p *Pool) GetSpaceSize(space int64) int {
 		return calculateChunkSpaceSize(p.getChunkSize(block, chunk))
 	}
 
-	unmanagedBlockSize, err := p.buddy.GetBlockSize(space)
-
-	if err != nil {
-		panic(err)
-	}
-
-	return unmanagedBlockSize
+	return p.buddy.MustGetBlockSize(space)
 }
 
 // StorePooledBlockList stores the pooled block list of the pool to the given buffer.

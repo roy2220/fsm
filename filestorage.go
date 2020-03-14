@@ -72,9 +72,9 @@ func (fs *FileStorage) Close() error {
 }
 
 // AllocateSpace allocates space with the given size on the file,
-// returns the space allocated and an ephemeral space accessor
-// (a byte slice for reading/writing space,
-// may get *INVALIDATED* after calling AllocateSpace/FreeSpace).
+// returns the space allocated and an ephemeral accessor (a byte
+// slice for reading/writing space, may get *INVALIDATED* after
+// calling Allocate.../Free...).
 func (fs *FileStorage) AllocateSpace(spaceSize int) (int64, []byte) {
 	space, spaceSize := fs.pool.AllocateSpace(spaceSize)
 	spaceAccessor := fs.spaceMapper.AccessSpace()[space : space+int64(spaceSize)]
@@ -86,23 +86,52 @@ func (fs *FileStorage) FreeSpace(space int64) {
 	fs.pool.FreeSpace(space)
 }
 
-// AccessSpace returns an ephemeral space accessor of the given space on the file
-// (a byte slice for reading/writing space,
-// may get *INVALIDATED* after calling AllocateSpace/FreeSpace).
+// AccessSpace returns an ephemeral accessor of the given space
+// on the file (a byte slice for reading/writing space, may get
+// *INVALIDATED* after calling Allocate.../Free...).
 func (fs *FileStorage) AccessSpace(space int64) []byte {
 	spaceSize := fs.pool.GetSpaceSize(space)
 	spaceAccessor := fs.spaceMapper.AccessSpace()[space : space+int64(spaceSize)]
 	return spaceAccessor
 }
 
+// AllocateAlignedSpace allocates aligned space, aka a block,
+// with the given size on the file, returns the aligned space
+// allocated and an ephemeral accessor (a byte slice for
+// reading/writing space, may get *INVALIDATED* after calling
+// Allocate.../Free...).
+func (fs *FileStorage) AllocateAlignedSpace(blockSize int) (int64, []byte) {
+	block, blockSize := fs.buddy.MustAllocateBlock(blockSize)
+	blockAccessor := fs.spaceMapper.AccessSpace()[block : block+int64(blockSize)]
+	return block, blockAccessor
+}
+
+// FreeAlignedSpace releases the given aligned space, aka a
+// block, back to the file.
+func (fs *FileStorage) FreeAlignedSpace(block int64) {
+	fs.buddy.MustFreeBlock(block)
+}
+
+// AccessAlignedSpace returns an ephemeral accessor of the
+// given aligned space, aka a block, on the file (a byte slice
+// for reading/writing space, may get *INVALIDATED* after
+// calling Allocate.../Free...).
+func (fs *FileStorage) AccessAlignedSpace(block int64) []byte {
+	blockSize := fs.buddy.MustGetBlockSize(block)
+	blockAccessor := fs.spaceMapper.AccessSpace()[block : block+int64(blockSize)]
+	return blockAccessor
+}
+
 // SetPrimarySpace set the primary space on the file.
-// The primary space is allocated by user and serves for user-defined metadata.
+// The primary space is allocated by user and serves for
+// user-defined metadata.
 func (fs *FileStorage) SetPrimarySpace(primarySpace int64) {
 	fs.primarySpace = primarySpace
 }
 
 // PrimarySpace returns the primary space on the file.
-// The primary space is allocated by user and serves for user-defined metadata.
+// The primary space is allocated by user and serves for
+// user-defined metadata.
 func (fs *FileStorage) PrimarySpace() int64 {
 	return fs.primarySpace
 }
