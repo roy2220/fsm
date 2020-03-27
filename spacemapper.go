@@ -2,7 +2,6 @@ package fsm
 
 import (
 	"os"
-	"syscall"
 
 	"github.com/roy2220/fsm/internal/spacemapper"
 )
@@ -23,7 +22,7 @@ func (sm *spaceMapper) MapSpace(spaceSize int) error {
 	}
 
 	if sm.buffer != nil {
-		if err := syscall.Munmap(sm.buffer); err != nil {
+		if err := munmap(sm.buffer); err != nil {
 			return err
 		}
 
@@ -35,23 +34,13 @@ func (sm *spaceMapper) MapSpace(spaceSize int) error {
 	}
 
 	if spaceSize >= 1 {
-		buffer, err := syscall.Mmap(
-			int(sm.File.Fd()),
-			int64(fileHeaderSize),
-			spaceSize,
-			syscall.PROT_READ|syscall.PROT_WRITE,
-			syscall.MAP_SHARED,
-		)
+		buffer, err := mmap(sm.File, int64(fileHeaderSize), spaceSize)
 
 		if err != nil {
 			return err
 		}
 
 		sm.buffer = buffer
-
-		if err := syscall.Madvise(sm.buffer, syscall.MADV_RANDOM); err != nil {
-			return err
-		}
 	}
 
 	return nil
@@ -66,7 +55,7 @@ func (sm *spaceMapper) Close() error {
 		return nil
 	}
 
-	return syscall.Munmap(sm.buffer)
+	return munmap(sm.buffer)
 }
 
 var _ = spacemapper.SpaceMapper(&spaceMapper{})

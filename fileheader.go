@@ -26,9 +26,7 @@ type fileHeader struct {
 
 func (fh *fileHeader) Serialize(buffer []byte) {
 	_ = buffer[fileHeaderSize-1]
-	i := 0
-	copy(buffer[i:], fileSignature)
-	i += len(fileSignature)
+	i := copy(buffer, fileSignature)
 	binary.BigEndian.PutUint64(buffer[i:], uint64(fh.SpaceSize))
 	i += 8
 	binary.BigEndian.PutUint64(buffer[i:], uint64(fh.UsedSpaceSize))
@@ -39,8 +37,7 @@ func (fh *fileHeader) Serialize(buffer []byte) {
 	i += 8
 	binary.BigEndian.PutUint64(buffer[i:], uint64(fh.BlockAllocationBitmapSize))
 	i += 8
-	copy(buffer[i:], fh.PooledBlockList[:])
-	i += len(fh.PooledBlockList)
+	i += copy(buffer[i:], fh.PooledBlockList[:])
 	binary.BigEndian.PutUint64(buffer[i:], uint64(fh.DismissedSpaceSize))
 	i += 8
 	binary.BigEndian.PutUint64(buffer[i:], ^uint64(fh.PrimarySpace))
@@ -70,8 +67,7 @@ func (fh *fileHeader) Deserialize(data []byte) error {
 	i += 8
 	fh.BlockAllocationBitmapSize = int64(binary.BigEndian.Uint64(data[i:]))
 	i += 8
-	copy(fh.PooledBlockList[:], data[i:])
-	i += len(fh.PooledBlockList)
+	i += copy(fh.PooledBlockList[:], data[i:])
 	fh.DismissedSpaceSize = int64(binary.BigEndian.Uint64(data[i:]))
 	i += 8
 	fh.PrimarySpace = int64(^binary.BigEndian.Uint64(data[i:]))
