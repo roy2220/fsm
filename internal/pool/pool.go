@@ -237,7 +237,7 @@ func (p *Pool) mergeChunk(spaceAccessor []byte, block int64, chunk int32) int {
 }
 
 func (p *Pool) allocateBlock(chunkSize int) (int64, int32) {
-	block, _, _ := p.buddy.AllocateBlock(blockSize)
+	block, _ := p.buddy.MustAllocateBlock(blockSize)
 	spaceAccessor := p.accessSpace()
 	blockAccessor := accessBlock(spaceAccessor, block)
 	chunk := int32(blockHeaderSize)
